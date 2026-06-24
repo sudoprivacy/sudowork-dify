@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="118" height="32" viewBox="0 0 118 32" fill="none">
+  <!-- Sudowork wordmark only (no icon). Final rendered size is
+       width:auto height:32px (the nginx sub_filter in
+       docker/nginx/conf.d/default.conf.template injects the CSS that
+       lifts the upstream w-12 h-[22px] constraint). viewBox is sized to
+       fit the natural width of "Sudowork" at font-weight 800 / 22px so
+       glyphs render at their proper shape — no horizontal compression. -->
+  <text x="0" y="24"
+        font-family="-apple-system,Segoe UI,Helvetica Neue,Arial,sans-serif"
+        font-weight="800"
+        font-size="22"
+        fill="#0F1115"
+        letter-spacing="-0.4">Sudowork</text>
+</svg>

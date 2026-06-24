@@ -1,0 +1,88 @@
+# Please do not directly edit this file. Instead, modify the .env variables related to NGINX configuration.
+
+server {
+    listen ${NGINX_PORT};
+    server_name ${NGINX_SERVER_NAME};
+
+    location /console/api {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
+    location /api {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
+    location /socket.io/ {
+      resolver 127.0.0.11 valid=30s ipv6=off;
+      set $socket_io_upstream ${NGINX_SOCKET_IO_UPSTREAM};
+      proxy_pass http://$socket_io_upstream;
+      include proxy.conf;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_cache_bypass $http_upgrade;
+    }
+
+    location /v1 {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
+    location /files {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
+    location /explore {
+      proxy_pass http://web:3000;
+      include proxy.conf;
+    }
+
+    location /e/ {
+      proxy_pass http://plugin_daemon:5002;
+      proxy_set_header Dify-Hook-Url $scheme://$host$request_uri;
+      include proxy.conf;
+    }
+
+    location / {
+      proxy_pass http://web:3000;
+      include proxy.conf;
+      # Sudowork branding overlay: inject a CSS rule before </head> that
+      # enlarges the logo container Dify hard-codes to w-12 h-[22px]
+      # (48x22). Our SVG ships with viewBox matching this new size so the
+      # icon + wordmark render at the intended ~32px height.
+      # We disable gzip on the upstream so sub_filter actually sees the
+      # bytes — Dify's Next.js server uses chunked text, not gzip, so
+      # this only affects edge cases.
+      sub_filter '</head>' '<style>img[src*="/logo/logo.svg"],img[src*="/logo/logo-monochrome-white.svg"]{width:auto!important;height:32px!important;max-width:none!important}</style></head>';
+      # 2026-06-24 Sudowork rebrand: rewrite the hard-coded
+      # `<meta name="apple-mobile-web-app-title" content="Dify">` Dify ships
+      # in web/app/layout.tsx (compiled into SSR HTML, can't bind-mount).
+      sub_filter 'name="apple-mobile-web-app-title" content="Dify"' 'name="apple-mobile-web-app-title" content="Sudowork"';
+      # Auto-generated i18n string replacements (sudowork-patches/rebrand-subfilters.conf
+      # is built by generate-rebrand-subfilters.py from web/i18n/**/*.json).
+      # JS bundles need to be rewritten too because i18n strings ship inside
+      # them as compiled JSON literals, so include the right MIME types.
+      sub_filter_types text/html application/javascript text/javascript application/json;
+      include /etc/nginx/conf.d/rebrand-subfilters.conf;
+      sub_filter_once off;
+      proxy_set_header Accept-Encoding "";
+    }
+
+    location /mcp {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
+    location /triggers {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+    
+    # placeholder for acme challenge location
+    ${ACME_CHALLENGE_LOCATION}
+
+    # placeholder for https config defined in https.conf.template
+    ${HTTPS_CONFIG}
+}

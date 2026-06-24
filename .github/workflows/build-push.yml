@@ -1,0 +1,155 @@
+name: Build Sudowork Dify Offline Bundle
+
+# Builds linux/amd64 Docker images for dify-api and dify-web, saves
+# them as plain `docker save` tar files, packages them with the
+# docker/ tree (compose, configs, install.sh) into a single .zip.
+# The zip is uploaded as a workflow artifact.
+#
+# NO image is pushed to any registry — neither ghcr.io nor DockerHub —
+# and the bundle deliberately ships ONLY the two forked images. Upstream
+# dependency images (nginx, postgres, redis, weaviate, plugin-daemon,
+# sandbox, squid …) are saved by ops separately and `docker load`ed on
+# the customer host before this bundle's install.sh runs.
+#
+# Mirrors the simple build → save → upload pattern used by
+# sudowork-server/.github/workflows/ci.yml.
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+      - "build/**"
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver label embedded in the image tag (default: 1.14.2)"
+        required: false
+        type: string
+
+concurrency:
+  group: build-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Upstream Dify version we track. Bump this when we re-base on a new
+  # Dify release. Workflow tag inputs can override at dispatch time.
+  DEFAULT_VERSION: "1.14.2"
+
+jobs:
+  build-image:
+    name: Build dify-${{ matrix.service }} (linux/amd64)
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      short_sha: ${{ steps.ver.outputs.short_sha }}
+      image_tag: ${{ steps.ver.outputs.image_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            file: api/Dockerfile
+          - service: web
+            file: web/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version + tag
+        id: ver
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            v="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            v="${GITHUB_REF#refs/tags/v}"
+          else
+            v="${DEFAULT_VERSION}"
+          fi
+          short="$(echo ${{ github.sha }} | cut -c1-12)"
+          # Image tag suffix every artifact carries — version pins what
+          # upstream Dify we built against, sha pins exactly which commit.
+          tag="sudo-${v}-${short}"
+          {
+            echo "version=$v"
+            echo "short_sha=$short"
+            echo "image_tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dify-${{ matrix.service }} to local tar
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: false
+          build-args: COMMIT_SHA=${{ github.sha }}
+          tags: sudowork/dify-${{ matrix.service }}:${{ steps.ver.outputs.image_tag }}
+          outputs: type=docker,dest=./dify-${{ matrix.service }}.tar
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      - name: Upload image tar
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.service }}
+          path: dify-${{ matrix.service }}.tar
+          retention-days: 7
+          if-no-files-found: error
+
+  bundle:
+    name: Package offline bundle
+    needs: build-image
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version + bundle name
+        id: ver
+        env:
+          VERSION: ${{ needs.build-image.outputs.version }}
+          SHORT_SHA: ${{ needs.build-image.outputs.short_sha }}
+          IMAGE_TAG: ${{ needs.build-image.outputs.image_tag }}
+        run: |
+          bundle="sudowork-dify-offline-${VERSION}-${SHORT_SHA}-amd64"
+          {
+            echo "version=$VERSION"
+            echo "short_sha=$SHORT_SHA"
+            echo "image_tag=$IMAGE_TAG"
+            echo "bundle=$bundle"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download pre-built dify-api image tar
+        uses: actions/download-artifact@v4
+        with:
+          name: image-api
+          path: /tmp/prebuilt
+
+      - name: Download pre-built dify-web image tar
+        uses: actions/download-artifact@v4
+        with:
+          name: image-web
+          path: /tmp/prebuilt
+
+      - name: Build offline bundle (zip)
+        run: |
+          cd docker
+          ./build-offline-bundle.sh \
+            --version "${{ steps.ver.outputs.version }}" \
+            --short-sha "${{ steps.ver.outputs.short_sha }}" \
+            --prebuilt-images-dir /tmp/prebuilt \
+            --output "$GITHUB_WORKSPACE"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.bundle }}
+          path: ${{ steps.ver.outputs.bundle }}.zip
+          retention-days: 30
+          if-no-files-found: error
