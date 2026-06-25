@@ -1,7 +1,8 @@
 {
   "_comment": "Default model-provider plugins auto-installed into every new Dify tenant during sudowork-server tenant provisioning. The seed script (dify/docker/sudowork-patches/seed-plugins.sh) resolves each entry to a full unique_identifier via Dify marketplace and downloads the .difypkg ahead of time so admin's install step never needs marketplace.dify.ai access. Edit this list to change the default suite — the change is picked up on the next provisioning, no code change needed.",
   "_format": "Each entry is `<org>/<id>:<version>`. The seed script resolves it to the full `<org>/<id>:<version>@<sha256>` via GET https://marketplace.dify.ai/api/v1/plugins/<org>/<id>/<version>. Pin to specific versions (NOT 'latest') so behavior is deterministic across rebuilds.",
-  "_last_updated": "2026-06-23",
+  "_last_updated": "2026-06-25",
+  "_excluded": "sagemaker:0.0.17 removed 2026-06-25 — its transitive dep antlr4-python3-runtime is sdist-only on PyPI, so `uv sync --frozen` cannot resolve it from the offline wheel mirror. Re-add once we ship a custom-built antlr4 wheel.",
   "plugins": [
     "langgenius/openai:0.4.2",
     "langgenius/anthropic:0.3.23",
@@ -19,7 +20,6 @@
     "langgenius/replicate:0.0.8",
     "langgenius/x:0.0.21",
     "langgenius/nvidia_nim:0.0.9",
-    "langgenius/sagemaker:0.0.17",
     "langgenius/deepseek:0.0.17",
     "langgenius/tongyi:0.2.1",
     "langgenius/zhipuai:0.0.30",
