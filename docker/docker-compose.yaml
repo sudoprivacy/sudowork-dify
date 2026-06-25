@@ -249,8 +249,12 @@ x-shared-worker-beat-config: &shared-worker-beat-config
 
 services:
   # Init container to fix permissions
+  # NOTE: redis:6-alpine instead of busybox:latest — alpine has sh + chown +
+  # touch (everything this script needs) and is already a required image for
+  # the stack, so we don't pay an extra image download / docker save slot
+  # just for one-shot ownership setup.
   init_permissions:
-    image: busybox:latest
+    image: redis:6-alpine
     command:
       - sh
       - -c

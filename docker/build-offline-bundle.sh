@@ -184,6 +184,143 @@ rsync -a \
     --exclude='build-offline-bundle.sh' \
     "$SCRIPT_DIR/" "$STAGING_DIR/$BUNDLE_NAME/docker/"
 
+# ---- 2.5. transform compose for production / older Docker Compose ------
+# The dev docker-compose.yaml uses three patterns that break on Docker Compose
+# v2.17 (commonly shipped with Docker 20.10 on customer hosts):
+#   1. `env_file: [{path: X, required: false}, …]` — object form was added in
+#      Compose v2.20. We collapse it to plain string form and drop entries
+#      whose underlying file is not present in the bundle (the `required: false`
+#      semantics).
+#   2. `depends_on: { svc: { required: false, … } }` — also v2.20+. Strip
+#      `required:` lines so the syntax is accepted.
+#   3. Because (2) strips the "tolerate missing service" flag, also strip
+#      depends_on entries of active services that point at services whose
+#      profiles are NOT in the default-active set (weaviate / postgresql /
+#      collaboration). Otherwise Compose v2.17 errors with
+#      `no such service: db_mysql` etc.
+#
+# Plus: the dev compose bind-mounts sudowork patches into the api / worker
+# containers for hot reload. The production image already has these files
+# baked in, and the mount points (`../api/controllers/sudowork`) don't exist
+# in the bundle layout. We strip those mounts so the bundled image's own
+# code is what runs.
+log "step 2.5/3  transform compose.yaml for production / older compose"
+PROD_COMPOSE="$STAGING_DIR/$BUNDLE_NAME/docker/docker-compose.yaml"
+
+python3 - "$PROD_COMPOSE" <<'PY'
+import os, re, sys, yaml
+
+path = sys.argv[1]
+docker_dir = os.path.dirname(path)
+with open(path) as f: src = f.read()
+
+# (1) env_file: { path: X, required: B } -> "X", drop if file missing
+def env_file_repl(m):
+    indent, file_path = m.group(2), m.group(3)
+    abs_path = os.path.join(docker_dir, file_path)
+    if not os.path.exists(abs_path):
+        return ""
+    return f"{indent}- {file_path}\n"
+
+env_pat = re.compile(
+    r"(^([ \t]*)- path: (\S+)\s*\n\2  required: (?:true|false)\s*\n)",
+    re.MULTILINE,
+)
+n_env = len(env_pat.findall(src))
+src = env_pat.sub(env_file_repl, src)
+
+# (2) strip any residual "required: <bool>" lines (depends_on)
+req_pat = re.compile(r"^[ \t]*required:[ \t]+(?:true|false)[ \t]*\n", re.MULTILINE)
+n_req = len(req_pat.findall(src))
+src = req_pat.sub("", src)
+
+# (extra) strip dev-only sudowork overlay volume mounts (image has them baked in)
+dev_mount_patterns = [
+    r"\n[ \t]*- \./sudowork-patches/feature_init\.py:[^\n]*",
+    r"\n[ \t]*- \./sudowork-patches/ext_blueprints\.py:[^\n]*",
+    r"\n[ \t]*- \./sudowork-patches/feature_service\.py:[^\n]*",
+    r"\n[ \t]*- \.\./api/controllers/sudowork:[^\n]*",
+    r"\n[ \t]*- \.\./api/services/sudowork:[^\n]*",
+]
+n_mounts = 0
+for pat in dev_mount_patterns:
+    n_mounts += len(re.findall(pat, src))
+    src = re.sub(pat, "", src)
+
+# (3) strip depends_on entries of active services that point at inactive-profile
+#     services. We parse YAML to discover the profile graph but apply the edit
+#     via line-level surgery so we preserve anchors / comments / formatting.
+data = yaml.safe_load(src)
+DEFAULT_ACTIVE = {"weaviate", "postgresql", "collaboration"}
+def is_active(svc_name):
+    profs = data["services"][svc_name].get("profiles", [])
+    return (not profs) or any(p in DEFAULT_ACTIVE for p in profs)
+active_services = {n for n in data["services"] if is_active(n)}
+inactive_services = set(data["services"]) - active_services
+
+# State machine: walk lines, track current top-level service + whether we're
+# inside that service's depends_on block, remove inactive refs.
+lines = src.split("\n")
+out, i = [], 0
+state = "scan"
+service_indent = -1
+current_service = None
+in_depends_on = False
+depends_indent = -1
+n_deps = 0
+while i < len(lines):
+    line = lines[i]
+    stripped = line.lstrip()
+    indent = len(line) - len(stripped)
+
+    if state == "scan":
+        if indent == 2 and stripped.endswith(":") and not stripped.startswith("#"):
+            name = stripped[:-1]
+            if name in data["services"]:
+                current_service = name
+                service_indent = indent
+                state = "in_service"
+                in_depends_on = False
+                out.append(line); i += 1; continue
+        out.append(line); i += 1; continue
+
+    # state == "in_service"
+    if stripped and indent <= service_indent:
+        state = "scan"; current_service = None; in_depends_on = False
+        continue   # reprocess
+
+    if not in_depends_on and stripped == "depends_on:" and current_service in active_services:
+        in_depends_on = True; depends_indent = indent
+        out.append(line); i += 1; continue
+
+    if in_depends_on:
+        if stripped and indent <= depends_indent:
+            in_depends_on = False
+            continue   # reprocess
+        if stripped.startswith("- "):
+            ref = stripped[2:].strip()
+            if ref in inactive_services:
+                n_deps += 1; i += 1; continue
+        elif stripped.endswith(":"):
+            ref = stripped[:-1]
+            if ref in inactive_services:
+                n_deps += 1; i += 1
+                while i < len(lines):
+                    ns = lines[i].lstrip(); ni = len(lines[i]) - len(ns)
+                    if ns and ni <= indent: break
+                    i += 1
+                continue
+
+    out.append(line); i += 1
+
+src = "\n".join(out)
+with open(path, "w") as f: f.write(src)
+print(f"  env_file object-form -> string: {n_env}")
+print(f"  required: lines stripped:       {n_req}")
+print(f"  dev overlay mounts stripped:    {n_mounts}")
+print(f"  inactive depends_on stripped:   {n_deps}")
+PY
+
 # ---- 3. emit install.sh + bundle README --------------------------------
 log "step 3/3  emit install.sh + bundle README"
 

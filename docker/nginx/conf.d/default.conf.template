@@ -29,6 +29,15 @@ server {
       include proxy.conf;
     }
 
+    # Sudowork integration namespace — server-to-server only.
+    # sudowork-server calls into here (SSO exchange, tenant provisioning,
+    # system apps/datasets) using SUDOWORK_SSO_SECRET / SUDOWORK_SYSTEM_TOKEN.
+    # End users never hit /sudowork/* directly.
+    location /sudowork {
+      proxy_pass http://api:5001;
+      include proxy.conf;
+    }
+
     location /files {
       proxy_pass http://api:5001;
       include proxy.conf;
