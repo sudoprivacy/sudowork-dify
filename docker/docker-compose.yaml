@@ -333,6 +333,12 @@ services:
       # P3.5 default-plugin pre-install (lockfile + source JSON).
       - ./sudowork-patches/default-plugins.json:/app/api/sudowork_patches/default-plugins.json:ro
       - ./sudowork-patches/default-plugins.lock.json:/app/api/sudowork_patches/default-plugins.lock.json:ro
+      # The .difypkg bytes themselves. Must be repeated here because YAML
+      # `<<:` merge keys shallow-replace the anchor's `volumes:` list when
+      # the service also defines its own `volumes:` — without this line
+      # tenant_provisioning_service can't find any .difypkg and all 44
+      # default-plugin declarations fail with ENOENT.
+      - ./volumes/plugin_daemon/plugin_packages:/app/api/sudowork_patches/plugin_packages:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 30s
@@ -411,6 +417,10 @@ services:
       # that imports the provisioning helper from worker context still works.
       - ./sudowork-patches/default-plugins.json:/app/api/sudowork_patches/default-plugins.json:ro
       - ./sudowork-patches/default-plugins.lock.json:/app/api/sudowork_patches/default-plugins.lock.json:ro
+      # Mirror api's plugin_packages mount for symmetry — same YAML merge
+      # gotcha applies if a future code path ever ends up invoking
+      # tenant_provisioning_service from a Celery task.
+      - ./volumes/plugin_daemon/plugin_packages:/app/api/sudowork_patches/plugin_packages:ro
     healthcheck:
       test: ["CMD-SHELL", "celery -A celery_healthcheck.celery inspect ping"]
       interval: ${COMPOSE_WORKER_HEALTHCHECK_INTERVAL:-30s}
