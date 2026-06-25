@@ -422,14 +422,28 @@ if [[ ! -f .env ]]; then
         sed -i.bak "s#^${key}=.*#${key}=${val}#" .env && rm -f .env.bak
     }
 
+    # Only randomize *application-layer* secrets — these gate API endpoints
+    # exposed beyond the docker network.
     randset SECRET_KEY 42
     randset PLUGIN_DAEMON_KEY 48
     randset SUDOWORK_SSO_SECRET 48
     randset SUDOWORK_SYSTEM_SECRET 48
     randset SUDOWORK_SYSTEM_TOKEN 64
-    randset DB_PASSWORD 24
-    randset REDIS_PASSWORD 24
-    randset WEAVIATE_API_KEY 32
+    # Middleware passwords (DB / Redis / Weaviate) stay at the .env.example
+    # defaults. Reasons:
+    #   - They never leave the compose internal network (no host port for
+    #     postgres, redis, weaviate — only nginx/api are exposed).
+    #   - Randomizing breaks derived values (CELERY_BROKER_URL embeds
+    #     REDIS_PASSWORD literally; same for any vector store hooks). The
+    #     old script randset REDIS_PASSWORD but forgot to update
+    #     CELERY_BROKER_URL, which then 500'd every async indexing call
+    #     with kombu auth errors.
+    #   - Random middleware passwords also wedge re-install on existing
+    #     volumes: postgres bakes the password into pgdata initdb, so a
+    #     fresh random password on second install can't unlock old data.
+    # Customers who insist on rotating these can edit .env post-install
+    # and grep for all places the password appears (esp. CELERY_BROKER_URL,
+    # vector-store env). For most deployments the defaults are fine.
 
     # Pin image refs to whatever this bundle actually contains.
     sed -i.bak "s#^SUDO_DIFY_API_IMAGE=.*#SUDO_DIFY_API_IMAGE=${BUNDLED_API_IMAGE}#" .env
