@@ -42,6 +42,15 @@ _DEFAULT_PLUGINS_LOCK_PATH = os.environ.get(
     "/app/api/sudowork_patches/default-plugins.lock.json",
 )
 
+# Where the .difypkg bytes live, viewed from inside the api container.
+# Compose bind-mounts ./volumes/plugin_daemon/plugin_packages here read-only
+# so we can hand the raw bytes to plugin_daemon's upload endpoint without
+# any inter-container HTTP juggling.
+_DEFAULT_PLUGINS_PKG_DIR = os.environ.get(
+    "SUDOWORK_DEFAULT_PLUGINS_PKG_DIR",
+    "/app/api/sudowork_patches/plugin_packages/langgenius",
+)
+
 
 def _load_default_plugin_identifiers() -> list[str]:
     """Resolve the lockfile to a list of marketplace unique_identifiers.
@@ -99,22 +108,33 @@ def _install_default_plugins(tenant_id: str) -> None:
         )
         return
 
-    # Install one-by-one rather than batching: an incompatible plugin
-    # (manifest enum mismatch, etc.) would otherwise abort the entire
-    # suite. Single-plugin failures are logged and skipped so the
-    # remaining 40+ plugins still land in the new tenant.
+    # Two-phase install per identifier — the "obvious" install_from_local_pkg
+    # by itself is NOT enough on a fresh deploy:
     #
-    # IMPORTANT: use `install_from_local_pkg`, NOT `install_from_marketplace_pkg`.
-    # Despite the similar signature, the "marketplace" variant fetches the
-    # .difypkg from marketplace.dify.ai on the fly, which defeats the whole
-    # point of P3.5b (pre-seeded plugin_packages/ for offline customers).
-    # `install_from_local_pkg` reads directly from
-    # volumes/plugin_daemon/plugin_packages/langgenius/<id>@<sha>/ so it
-    # works air-gapped.
+    #   1. upload_pkg(tenant_id, raw_bytes) — pushes the .difypkg blob over
+    #      HTTP to plugin_daemon, which decodes the manifest and inserts a
+    #      row into the `plugin_declarations` table. Without this, step 2
+    #      always returns "plugin not found": daemon resolves identifiers
+    #      against that table, NOT against the filesystem cache directly.
+    #      The pre-seeded plugin_packages/ files only become useful AFTER
+    #      they have been declared via this upload step.
+    #
+    #   2. install_from_local_pkg(tenant_id, [uid]) — attaches the now-
+    #      declared plugin to the tenant.
+    #
+    # Per-plugin try/except keeps a single bad manifest (e.g. `feature:
+    # polling` enum that 1.14.2 doesn't recognise) from aborting the rest.
     succeeded = 0
     failed: list[str] = []
     for uid in identifiers:
         try:
+            # uid shape: "langgenius/openai:0.4.2@<sha256>"
+            # filename on disk drops the "langgenius/" prefix.
+            _, fname = uid.split("/", 1)
+            pkg_path = os.path.join(_DEFAULT_PLUGINS_PKG_DIR, fname)
+            with open(pkg_path, "rb") as fh:
+                pkg_bytes = fh.read()
+            PluginService.upload_pkg(tenant_id, pkg_bytes)
             PluginService.install_from_local_pkg(tenant_id, [uid])
             succeeded += 1
         except Exception as e:

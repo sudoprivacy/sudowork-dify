@@ -78,6 +78,11 @@ x-shared-api-worker-config: &shared-api-worker-config
     # plugin unique_identifiers without internet access.
     - ./sudowork-patches/default-plugins.json:/app/api/sudowork_patches/default-plugins.json:ro
     - ./sudowork-patches/default-plugins.lock.json:/app/api/sudowork_patches/default-plugins.lock.json:ro
+    # The .difypkg blobs themselves — read-only into api/worker so
+    # tenant_provisioning_service can hand the bytes to plugin_daemon's
+    # upload_pkg endpoint (which registers the declaration before
+    # install_from_local_pkg can attach it to the tenant).
+    - ./volumes/plugin_daemon/plugin_packages:/app/api/sudowork_patches/plugin_packages:ro
   networks:
     - ssrf_proxy_network
     - default
@@ -160,6 +165,11 @@ x-shared-worker-config: &shared-worker-config
     # plugin unique_identifiers without internet access.
     - ./sudowork-patches/default-plugins.json:/app/api/sudowork_patches/default-plugins.json:ro
     - ./sudowork-patches/default-plugins.lock.json:/app/api/sudowork_patches/default-plugins.lock.json:ro
+    # The .difypkg blobs themselves — read-only into api/worker so
+    # tenant_provisioning_service can hand the bytes to plugin_daemon's
+    # upload_pkg endpoint (which registers the declaration before
+    # install_from_local_pkg can attach it to the tenant).
+    - ./volumes/plugin_daemon/plugin_packages:/app/api/sudowork_patches/plugin_packages:ro
   networks:
     - ssrf_proxy_network
     - default
@@ -242,6 +252,11 @@ x-shared-worker-beat-config: &shared-worker-beat-config
     # plugin unique_identifiers without internet access.
     - ./sudowork-patches/default-plugins.json:/app/api/sudowork_patches/default-plugins.json:ro
     - ./sudowork-patches/default-plugins.lock.json:/app/api/sudowork_patches/default-plugins.lock.json:ro
+    # The .difypkg blobs themselves — read-only into api/worker so
+    # tenant_provisioning_service can hand the bytes to plugin_daemon's
+    # upload_pkg endpoint (which registers the declaration before
+    # install_from_local_pkg can attach it to the tenant).
+    - ./volumes/plugin_daemon/plugin_packages:/app/api/sudowork_patches/plugin_packages:ro
   networks:
     - ssrf_proxy_network
     - default
