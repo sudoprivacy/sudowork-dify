@@ -85,7 +85,10 @@ def _install_default_plugins(tenant_id: str) -> None:
     try:
         # Imported lazily to keep the provisioning module light at import
         # time and so a stale plugin_service can't poison fresh deploys.
-        from services.plugin.plugin_service import PluginService
+        # Note: in current Dify the PluginService class lives under
+        # `core.plugin.plugin_service` — the legacy `services.plugin.*`
+        # path was renamed and no longer exists.
+        from core.plugin.plugin_service import PluginService
     except Exception as e:
         import traceback as _tb
         logger.exception(
@@ -100,11 +103,19 @@ def _install_default_plugins(tenant_id: str) -> None:
     # (manifest enum mismatch, etc.) would otherwise abort the entire
     # suite. Single-plugin failures are logged and skipped so the
     # remaining 40+ plugins still land in the new tenant.
+    #
+    # IMPORTANT: use `install_from_local_pkg`, NOT `install_from_marketplace_pkg`.
+    # Despite the similar signature, the "marketplace" variant fetches the
+    # .difypkg from marketplace.dify.ai on the fly, which defeats the whole
+    # point of P3.5b (pre-seeded plugin_packages/ for offline customers).
+    # `install_from_local_pkg` reads directly from
+    # volumes/plugin_daemon/plugin_packages/langgenius/<id>@<sha>/ so it
+    # works air-gapped.
     succeeded = 0
     failed: list[str] = []
     for uid in identifiers:
         try:
-            PluginService.install_from_marketplace_pkg(tenant_id, [uid])
+            PluginService.install_from_local_pkg(tenant_id, [uid])
             succeeded += 1
         except Exception as e:
             failed.append(uid.split("@", 1)[0])
