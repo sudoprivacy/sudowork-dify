@@ -108,19 +108,23 @@ def _install_default_plugins(tenant_id: str) -> None:
         )
         return
 
-    # Two-phase install per identifier — the "obvious" install_from_local_pkg
-    # by itself is NOT enough on a fresh deploy:
+    # Only upload — DO NOT install per-tenant. Reasons:
     #
-    #   1. upload_pkg(tenant_id, raw_bytes) — pushes the .difypkg blob over
-    #      HTTP to plugin_daemon, which decodes the manifest and inserts a
-    #      row into the `plugin_declarations` table. Without this, step 2
-    #      always returns "plugin not found": daemon resolves identifiers
-    #      against that table, NOT against the filesystem cache directly.
-    #      The pre-seeded plugin_packages/ files only become useful AFTER
-    #      they have been declared via this upload step.
+    #   - Every installed plugin spawns a long-running Python subprocess
+    #     inside plugin_daemon (each plugin runs in its own venv as its
+    #     own server). 44 always-on processes ≈ several GB RSS for a
+    #     freshly-provisioned tenant who may never use most of them.
+    #   - upload_pkg alone pushes the .difypkg to plugin_daemon, decodes
+    #     the manifest, and registers a row in `plugin_declarations`.
+    #     That's enough for the Studio "Install from Marketplace" button
+    #     to short-circuit to install_from_local_pkg (see
+    #     install_redirect.py) when admin actually clicks install for
+    #     a specific provider.
     #
-    #   2. install_from_local_pkg(tenant_id, [uid]) — attaches the now-
-    #      declared plugin to the tenant.
+    # So the user trade is: tenant boots with 0 plugin processes (cheap),
+    # and the FIRST click on "Install" for any given provider becomes the
+    # moment its process spawns. Subsequent clicks fan out memory only
+    # for providers actually in use.
     #
     # Per-plugin try/except keeps a single bad manifest (e.g. `feature:
     # polling` enum that 1.14.2 doesn't recognise) from aborting the rest.
@@ -135,18 +139,18 @@ def _install_default_plugins(tenant_id: str) -> None:
             with open(pkg_path, "rb") as fh:
                 pkg_bytes = fh.read()
             PluginService.upload_pkg(tenant_id, pkg_bytes)
-            PluginService.install_from_local_pkg(tenant_id, [uid])
             succeeded += 1
         except Exception as e:
             failed.append(uid.split("@", 1)[0])
             logger.warning(
-                "sudowork_default_plugin_skip tenant=%s plugin=%s err=%s",
+                "sudowork_default_plugin_declare_skip tenant=%s plugin=%s err=%s",
                 tenant_id,
                 uid,
                 e,
             )
     logger.info(
-        "sudowork_default_plugins_installed tenant=%s succeeded=%d failed=%d",
+        "sudowork_default_plugins_declared tenant=%s succeeded=%d failed=%d "
+        "(declarations only; actual install spawns lazily per Studio click)",
         tenant_id,
         succeeded,
         len(failed),

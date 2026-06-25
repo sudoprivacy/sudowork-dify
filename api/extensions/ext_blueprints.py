@@ -123,6 +123,13 @@ def init_app(app: DifyApp):
         )
         app.register_blueprint(sudowork_bp)
 
+        # Patch PluginService so the Studio "Install from Marketplace"
+        # button uses the local cache (no PyPI fetch) for any plugin we
+        # pre-seeded via seed-plugins.sh. See install_redirect.py for
+        # the rationale.
+        from services.sudowork.install_redirect import apply_marketplace_to_local_redirect
+        apply_marketplace_to_local_redirect()
+
     # Register trigger blueprint with CORS for webhook calls
     _apply_cors_once(
         trigger_bp,
