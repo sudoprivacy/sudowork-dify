@@ -35,6 +35,19 @@ OUT_PATH = Path(__file__).resolve().parents[1] / "nginx" / "conf.d" / "rebrand-s
 BRAND_FROM = "Dify"
 BRAND_TO = "Sudowork"
 
+# Per-string overrides that bypass the default `Dify -> Sudowork` rewrite.
+# Use this for places where we want to *keep* the upstream brand visible
+# (e.g. links pointing into the actual Dify marketplace — calling that a
+# "Sudowork marketplace" is misleading because the destination is still
+# marketplace.dify.ai).
+#
+# Convention: lowercase "dify" signals "this is the upstream project's
+# name, not our product". Keep the rest of the phrase intact.
+OVERRIDES = {
+    "Dify 市场": "dify 市场",
+    "Dify Marketplace": "dify Marketplace",
+}
+
 # nginx hard-limits sub_filter directives to 255 per location, so we
 # cherry-pick:
 #   - only the two locales we ship UI for (zh-Hans + en-US)
@@ -103,7 +116,7 @@ def main() -> None:
     for original in candidates:
         if len(rules) >= MAX_RULES:
             break
-        rewritten = original.replace(BRAND_FROM, BRAND_TO)
+        rewritten = OVERRIDES.get(original, original.replace(BRAND_FROM, BRAND_TO))
         if rewritten == original:
             continue
         rules.append(
