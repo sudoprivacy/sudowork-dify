@@ -721,6 +721,17 @@ services:
       VOLCENGINE_TOS_REGION: ${PLUGIN_VOLCENGINE_TOS_REGION:-}
       SENTRY_ENABLED: ${PLUGIN_SENTRY_ENABLED:-false}
       SENTRY_DSN: ${PLUGIN_SENTRY_DSN:-}
+      # P3.5b airgap wheels: plugin_daemon runs `uv sync` per plugin at
+      # install time. With pypi.org out of reach (the air-gap customer
+      # premise), we redirect uv at the wheel pool seed-plugins.sh built
+      # offline. UV_NO_INDEX forbids upstream fall-through so a missing
+      # wheel surfaces as a clean error instead of a timeout.
+      UV_FIND_LINKS: /app/storage/wheels
+      UV_INDEX_URL: file:///app/storage/wheels/simple/
+      UV_NO_INDEX: "true"
+      # Same redirect for the legacy pip code path some Dify versions use.
+      PIP_FIND_LINKS: /app/storage/wheels
+      PIP_NO_INDEX: "1"
     ports:
       - "${EXPOSE_PLUGIN_DEBUGGING_PORT:-5003}:${PLUGIN_DEBUGGING_PORT:-5003}"
     volumes:

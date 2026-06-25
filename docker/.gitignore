@@ -1,0 +1,4 @@
+
+# P3.5b wheel cache for offline plugin install — populated by
+# seed-plugins.sh, shipped via the offline bundle (not git).
+volumes/plugin_daemon/wheels/
