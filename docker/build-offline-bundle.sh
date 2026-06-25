@@ -91,6 +91,11 @@ SUDO_DIFY_API_IMAGE="sudowork/dify-api:${IMAGE_TAG}"
 SUDO_DIFY_WEB_IMAGE="sudowork/dify-web:${IMAGE_TAG}"
 
 BUNDLE_NAME="sudowork-dify-offline-${VERSION}-${SHORT_SHA}-${ARCH}"
+# Customer-facing top-level directory the .zip extracts into. We split this
+# from BUNDLE_NAME so the released archive filename still carries the
+# version+sha (useful for support tickets), but the on-disk path ops type
+# all day stays short and stable: /data/deploy/dify/dify-deploy.
+EXTRACT_DIR_NAME="dify-deploy"
 STAGING_DIR="$(mktemp -d -t sudowork-bundle-XXXXXX)"
 trap '[[ $KEEP_TEMP -eq 0 ]] && rm -rf "$STAGING_DIR"' EXIT
 
@@ -101,11 +106,12 @@ log "version       : $VERSION"
 log "short sha     : $SHORT_SHA"
 log "image tag     : $IMAGE_TAG"
 log "bundle name   : $BUNDLE_NAME"
+log "extract dir   : $EXTRACT_DIR_NAME"
 
 # ---- 1. save fork images -----------------------------------------------
 log "step 1/3  populate images/ in staging dir"
-mkdir -p "$STAGING_DIR/$BUNDLE_NAME/images"
-MANIFEST="$STAGING_DIR/$BUNDLE_NAME/images/manifest.txt"
+mkdir -p "$STAGING_DIR/$EXTRACT_DIR_NAME/images"
+MANIFEST="$STAGING_DIR/$EXTRACT_DIR_NAME/images/manifest.txt"
 : > "$MANIFEST"
 
 safe_name() { echo "$1" | tr '/:' '__'; }
@@ -125,7 +131,7 @@ if [[ -n "$PREBUILT_IMAGES_DIR" ]]; then
             api) ref="$SUDO_DIFY_API_IMAGE" ;;
             web) ref="$SUDO_DIFY_WEB_IMAGE" ;;
         esac
-        dst="$STAGING_DIR/$BUNDLE_NAME/images/$(safe_name "$ref").tar"
+        dst="$STAGING_DIR/$EXTRACT_DIR_NAME/images/$(safe_name "$ref").tar"
         cp "$src" "$dst"
         write_manifest_line "$dst" "$ref"
     done
@@ -138,7 +144,7 @@ else
             exit 1
         fi
         base=$(safe_name "$ref")
-        tar="$STAGING_DIR/$BUNDLE_NAME/images/${base}.tar"
+        tar="$STAGING_DIR/$EXTRACT_DIR_NAME/images/${base}.tar"
         log "    saving $ref"
         docker save -o "$tar" "$ref"
         write_manifest_line "$tar" "$ref"
@@ -182,7 +188,7 @@ rsync -a \
     --exclude='middleware.env' \
     --exclude='docker-compose.override.yaml' \
     --exclude='build-offline-bundle.sh' \
-    "$SCRIPT_DIR/" "$STAGING_DIR/$BUNDLE_NAME/docker/"
+    "$SCRIPT_DIR/" "$STAGING_DIR/$EXTRACT_DIR_NAME/docker/"
 
 # ---- 2.5. transform compose for production / older Docker Compose ------
 # The dev docker-compose.yaml uses three patterns that break on Docker Compose
@@ -205,7 +211,7 @@ rsync -a \
 # in the bundle layout. We strip those mounts so the bundled image's own
 # code is what runs.
 log "step 2.5/3  transform compose.yaml for production / older compose"
-PROD_COMPOSE="$STAGING_DIR/$BUNDLE_NAME/docker/docker-compose.yaml"
+PROD_COMPOSE="$STAGING_DIR/$EXTRACT_DIR_NAME/docker/docker-compose.yaml"
 
 python3 - "$PROD_COMPOSE" <<'PY'
 import os, re, sys, yaml
@@ -327,7 +333,7 @@ log "step 3/3  emit install.sh + bundle README"
 # Unquoted heredoc on the head — $SUDO_DIFY_* expands at bundle-build
 # time so the customer host knows exactly which refs were bundled.
 # Quoted body — customer-host shell vars stay literal.
-cat > "$STAGING_DIR/$BUNDLE_NAME/install.sh" <<INSTALL_SH_HEAD
+cat > "$STAGING_DIR/$EXTRACT_DIR_NAME/install.sh" <<INSTALL_SH_HEAD
 #!/usr/bin/env bash
 # Sudowork (Dify) offline installer.
 # Invoked on the customer host after unzipping the bundle.
@@ -340,7 +346,7 @@ BUNDLED_API_IMAGE="${SUDO_DIFY_API_IMAGE}"
 BUNDLED_WEB_IMAGE="${SUDO_DIFY_WEB_IMAGE}"
 INSTALL_SH_HEAD
 
-cat >> "$STAGING_DIR/$BUNDLE_NAME/install.sh" <<'INSTALL_SH'
+cat >> "$STAGING_DIR/$EXTRACT_DIR_NAME/install.sh" <<'INSTALL_SH'
 
 set -euo pipefail
 
@@ -498,9 +504,9 @@ Sudowork-server should point at:
 ------------------------------------------------------------------
 EOF
 INSTALL_SH
-chmod +x "$STAGING_DIR/$BUNDLE_NAME/install.sh"
+chmod +x "$STAGING_DIR/$EXTRACT_DIR_NAME/install.sh"
 
-cat > "$STAGING_DIR/$BUNDLE_NAME/README.md" <<EOF
+cat > "$STAGING_DIR/$EXTRACT_DIR_NAME/README.md" <<EOF
 # Sudowork (Dify) Offline Bundle
 
 Built: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -540,7 +546,7 @@ EOF
 
 # ---- pack as zip -------------------------------------------------------
 log "packing → ${OUTPUT_DIR}/${BUNDLE_NAME}.zip"
-( cd "$STAGING_DIR" && zip -r -q "${OUTPUT_DIR}/${BUNDLE_NAME}.zip" "$BUNDLE_NAME" )
+( cd "$STAGING_DIR" && zip -r -q "${OUTPUT_DIR}/${BUNDLE_NAME}.zip" "$EXTRACT_DIR_NAME" )
 size=$(du -sh "${OUTPUT_DIR}/${BUNDLE_NAME}.zip" | cut -f1)
 log "done. bundle: ${OUTPUT_DIR}/${BUNDLE_NAME}.zip ($size)"
 
