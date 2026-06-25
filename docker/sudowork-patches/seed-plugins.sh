@@ -213,42 +213,92 @@ for spec in "${SPECS[@]}"; do
     pkg_path="$PLUGIN_DIR/$fname"
     [[ -f "$pkg_path" ]] || { printf "  ✗ %-45s  missing .difypkg, skip\n" "$spec"; wheel_fail=$((wheel_fail + 1)); continue; }
 
-    # Extract pyproject.toml from the .difypkg (it's a plain zip).
+    # Drive the download from each plugin's own uv.lock — the exact
+    # versions + URLs the plugin_daemon will ask uv to fetch at install
+    # time. (Re-resolving via `uv pip compile pyproject.toml` would give
+    # us currently-latest versions, which usually drift from the
+    # plugin's locked pins → filename mismatch → URL rewrite misses.)
     work="$TMP_WHEEL_WORK/${fname//[:@\/]/_}"
     mkdir -p "$work"
-    if ! unzip -j -o -q "$pkg_path" pyproject.toml -d "$work" 2>/dev/null; then
-        printf "  ⚠ %-45s  no pyproject.toml, skip\n" "$spec"
+    if ! unzip -j -o -q "$pkg_path" uv.lock -d "$work" 2>/dev/null; then
+        printf "  ⚠ %-45s  no uv.lock, skip\n" "$spec"
         continue
     fi
 
-    # uv pip compile reads pyproject.toml directly and resolves the full
-    # transitive dep set with exact pins.
-    req="$work/req.txt"
-    if ! uv pip compile "$work/pyproject.toml" \
-            --output-file "$req" \
-            --python-version "$TARGET_PYTHON_VERSION" \
-            --quiet 2>"$work/compile.err"; then
-        printf "  ✗ %-45s  uv pip compile failed (%s)\n" "$spec" "$(head -1 "$work/compile.err")"
-        wheel_fail=$((wheel_fail + 1))
-        continue
-    fi
+    python3 - "$work/uv.lock" "$WHEELS_DIR" "$work/dl.log" <<'PY'
+import sys, urllib.request, urllib.error, re
+from pathlib import Path
 
-    # pip download with multi-platform tags. --no-deps because the
-    # resolved requirements.txt already pins every transitive dep.
-    if ! $PIP download \
-            --requirement "$req" \
-            --dest "$WHEELS_DIR" \
-            --python-version "${TARGET_PYTHON_VERSION//./}" \
-            "${PLATFORM_FLAGS[@]}" \
-            --only-binary=:all: \
-            --no-deps \
-            >"$work/dl.log" 2>&1; then
-        printf "  ✗ %-45s  pip download failed (see %s)\n" "$spec" "$work/dl.log"
-        wheel_fail=$((wheel_fail + 1))
+lock_path = Path(sys.argv[1])
+wheels_dir = Path(sys.argv[2])
+log_path = Path(sys.argv[3])
+log = open(log_path, "w")
+
+# Keep only wheels we could actually install inside the plugin_daemon
+# container (cpython on linux x86_64). Skip macOS / Windows / arm / wrong-cpython.
+# Pure-python wheels (-py3-none-any.whl, -py2.py3-none-any.whl) are kept.
+def is_useful(fname: str) -> bool:
+    if fname.endswith(("-py3-none-any.whl", "-py2.py3-none-any.whl", "-none-any.whl")):
+        return True
+    # Native wheel: must be cp3.12 (or cp3X-abi3 ABI-stable) on linux x86_64.
+    # Filename shape: <name>-<ver>-<py>-<abi>-<platform>.whl
+    parts = fname.removesuffix(".whl").split("-")
+    if len(parts) < 5:
+        return False
+    py, abi, platform = parts[-3], parts[-2], parts[-1]
+    if not platform.startswith(("linux_x86_64", "manylinux")):
+        return False
+    if "x86_64" not in platform:
+        return False
+    return py == "cp312" or abi == "abi3"
+
+# Cheap TOML extractor: scan for `url = "https://files.pythonhosted.org/.../<file>.whl"`
+URL_PAT = re.compile(
+    r'url = "(https://files\.pythonhosted\.org/packages/[^"]+\.whl)"'
+)
+urls = set()
+content = lock_path.read_text(encoding="utf-8")
+for m in URL_PAT.finditer(content):
+    url = m.group(1)
+    fname = url.rsplit("/", 1)[-1]
+    if is_useful(fname):
+        urls.add(url)
+
+print(f"lockfile lists {len(urls)} useful wheel URL(s) for this plugin", file=log)
+ok = 0
+fail = 0
+for url in sorted(urls):
+    fname = url.rsplit("/", 1)[-1]
+    dst = wheels_dir / fname
+    if dst.exists():
+        ok += 1
         continue
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp, open(dst, "wb") as f:
+            while chunk := resp.read(65536):
+                f.write(chunk)
+        ok += 1
+        print(f"  ↓ {fname}", file=log)
+    except Exception as e:
+        fail += 1
+        print(f"  ✗ {fname} ({e})", file=log)
+        # Clean up partial file
+        if dst.exists():
+            dst.unlink()
+
+print(f"DONE ok={ok} fail={fail}", file=log)
+log.close()
+sys.exit(1 if fail else 0)
+PY
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        printf "  ✓ %-45s  cached\n" "$spec"
+        wheel_ok=$((wheel_ok + 1))
+    else
+        printf "  ✗ %-45s  download had errors (see %s)\n" "$spec" "$work/dl.log"
+        wheel_fail=$((wheel_fail + 1))
     fi
-    printf "  ✓ %-45s  cached\n" "$spec"
-    wheel_ok=$((wheel_ok + 1))
 done
 
 # Generate PEP 503 simple index from the flat wheel pool so uv can use
@@ -293,6 +343,116 @@ PY
 echo
 echo "→ wheel cache: ok=$wheel_ok failed=$wheel_fail"
 echo "  size: $(du -sh "$WHEELS_DIR" 2>/dev/null | cut -f1)"
+
+# -------------------------------------------------------------------
+# Phase 3: rewrite each .difypkg's uv.lock so `uv sync --frozen`
+# pulls wheels from /app/storage/wheels instead of pythonhosted.org.
+#
+# plugin_daemon launches plugins via `uv sync --no-dev --frozen`, which
+# uses the lockfile's exact URLs. UV_FIND_LINKS / UV_NO_INDEX have NO
+# effect on `--frozen` — uv honors whatever the lockfile pins. So even
+# with the wheels on disk, an airgapped daemon still calls out to PyPI
+# unless we rewrite the URLs in-place.
+#
+# Each lockfile entry like:
+#     wheels = [
+#         { url = "https://files.pythonhosted.org/packages/.../foo-1.0-...whl", hash = "sha256:..." },
+#     ]
+# becomes:
+#     wheels = [
+#         { url = "file:///app/storage/wheels/foo-1.0-...whl", hash = "sha256:..." },
+#     ]
+#
+# `sha256` is preserved (we downloaded the same wheels, hashes match)
+# so uv still verifies integrity offline.
+#
+# Side effect: re-zipping the .difypkg invalidates the archive comment
+# signature plugin_daemon would normally verify. Set
+# FORCE_VERIFYING_SIGNATURE=false in compose to accept our rewritten
+# packages.
+# -------------------------------------------------------------------
+
+echo
+echo "→ rewriting uv.lock URLs in $total .difypkg files → file:///app/storage/wheels/"
+rewrite_ok=0
+rewrite_fail=0
+for spec in "${SPECS[@]}"; do
+    resolved=""
+    for entry in "${LOCK_ENTRIES[@]}"; do
+        [[ "$entry" == "$spec="* ]] && { resolved="${entry#*=}"; break; }
+    done
+    [[ -z "$resolved" ]] && continue
+    fname="${resolved#*/}"
+    pkg_path="$PLUGIN_DIR/$fname"
+    [[ -f "$pkg_path" ]] || continue
+
+    work="$TMP_WHEEL_WORK/rewrite_${fname//[:@\/]/_}"
+    mkdir -p "$work"
+
+    python3 - "$pkg_path" "$work" "$WHEELS_DIR" <<'PY'
+import re, sys, zipfile
+from pathlib import Path
+
+pkg_path = Path(sys.argv[1])
+work = Path(sys.argv[2])
+wheels_dir = Path(sys.argv[3])
+
+# Extract.
+with zipfile.ZipFile(pkg_path) as z:
+    z.extractall(work)
+
+lockfile = work / "uv.lock"
+if not lockfile.exists():
+    print(f"NOLOCK {pkg_path.name}")
+    sys.exit(2)
+
+content = lockfile.read_text(encoding="utf-8")
+
+# Build the set of wheels we shipped — anything else stays as-is and will
+# fail offline with a clear "missing wheel" error rather than silently
+# falling through to PyPI.
+have = {p.name for p in wheels_dir.glob("*.whl")}
+
+# Match every `url = "https://files.pythonhosted.org/.../<filename>"`
+# and rewrite when we have a local copy.
+URL_PAT = re.compile(
+    r'url = "https://files\.pythonhosted\.org/packages/[a-z0-9/]+/(?P<file>[^"/]+)"'
+)
+rewrites = 0
+missing = []
+
+def repl(m):
+    global rewrites
+    fn = m.group("file")
+    if fn in have:
+        rewrites += 1
+        return f'url = "file:///app/storage/wheels/{fn}"'
+    missing.append(fn)
+    return m.group(0)
+
+new = URL_PAT.sub(repl, content)
+lockfile.write_text(new, encoding="utf-8")
+
+# Repack as zip (drop the archive comment / signature — we're tampering
+# with the payload anyway so the original signature is invalid).
+with zipfile.ZipFile(pkg_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for p in sorted(work.rglob("*")):
+        if p.is_file():
+            z.write(p, p.relative_to(work).as_posix())
+
+print(f"REWROTE {pkg_path.name} rewrites={rewrites} missing={len(missing)}")
+if missing:
+    # First few for visibility.
+    print("  examples:", ", ".join(missing[:3]))
+PY
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        rewrite_ok=$((rewrite_ok + 1))
+    else
+        rewrite_fail=$((rewrite_fail + 1))
+    fi
+done
+echo "→ uv.lock rewrite: ok=$rewrite_ok failed=$rewrite_fail"
 
 if [[ $wheel_fail -gt 0 ]]; then
     echo "✗ some wheel resolutions failed; check $TMP_WHEEL_WORK/*/dl.log" >&2

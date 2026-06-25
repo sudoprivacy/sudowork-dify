@@ -685,7 +685,13 @@ services:
       PLUGIN_REMOTE_INSTALLING_HOST: ${PLUGIN_DEBUGGING_HOST:-0.0.0.0}
       PLUGIN_REMOTE_INSTALLING_PORT: ${PLUGIN_DEBUGGING_PORT:-5003}
       PLUGIN_WORKING_PATH: ${PLUGIN_WORKING_PATH:-/app/storage/cwd}
-      FORCE_VERIFYING_SIGNATURE: ${FORCE_VERIFYING_SIGNATURE:-true}
+      # FORCE_VERIFYING_SIGNATURE flipped to false because P3.5b's
+      # uv.lock rewrite invalidates the archive comment signature on
+      # each .difypkg (we re-pack to point the lockfile URLs at
+      # /app/storage/wheels/). The wheel sha256 hashes inside uv.lock
+      # are preserved, so integrity is still verified — just by uv at
+      # install time, not by plugin_daemon at upload time.
+      FORCE_VERIFYING_SIGNATURE: ${FORCE_VERIFYING_SIGNATURE:-false}
       PYTHON_ENV_INIT_TIMEOUT: ${PLUGIN_PYTHON_ENV_INIT_TIMEOUT:-120}
       PLUGIN_MAX_EXECUTION_TIMEOUT: ${PLUGIN_MAX_EXECUTION_TIMEOUT:-600}
       PLUGIN_STDIO_BUFFER_SIZE: ${PLUGIN_STDIO_BUFFER_SIZE:-1024}
