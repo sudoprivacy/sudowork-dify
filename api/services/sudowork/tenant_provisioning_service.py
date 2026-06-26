@@ -25,7 +25,7 @@ from configs import dify_config
 from extensions.ext_database import db
 from libs.helper import generate_string
 from models.account import AccountStatus, TenantAccountRole
-from models.model import ApiToken, ApiTokenType
+from models.model import ApiToken, ApiTokenType, DifySetup
 from services.account_service import AccountService, TenantService
 
 logger = logging.getLogger(__name__)
@@ -229,6 +229,20 @@ def provision(*, enterprise_code: str, enterprise_name: str) -> ProvisionResult:
     TenantService.create_tenant_member(tenant, system_account, role=TenantAccountRole.OWNER.value)
 
     service_api_key = _issue_service_api_key(tenant.id)
+
+    # Mark Dify's first-run setup as complete. Without this row the Studio
+    # frontend's hard-coded boot check (`GET /console/api/setup`) returns
+    # `step="not_started"` and force-redirects to /install — even on an SSO
+    # exchange URL, even when several Tenants already exist. Upstream Dify
+    # writes this row inside its own `/console/api/setup` POST handler, but
+    # SudoWork bypasses that flow entirely (system-to-system provisioning
+    # via /sudowork/system/tenants), so the row would otherwise never
+    # appear and admins land on a broken setup form whose POST returns 403
+    # ("AlreadySetupError" from tenant_count > 0). We upsert it as part of
+    # the first provision; subsequent provisions are no-ops.
+    if not db.session.query(DifySetup).first():
+        db.session.add(DifySetup(version=dify_config.project.version))
+        db.session.flush()
 
     db.session.commit()
     logger.info(
