@@ -45,6 +45,7 @@ from services.entities.model_provider_entities import ProviderEntityResponse
 from services.plugin.plugin_auto_upgrade_service import PluginAutoUpgradeService
 from services.plugin.plugin_parameter_service import PluginParameterService
 from services.plugin.plugin_permission_service import PluginPermissionService
+from services.sudowork.offline_marketplace_service import OfflineMarketplaceService
 from services.tools.tools_transform_service import ToolTransformService
 
 
@@ -226,6 +227,12 @@ class ParserReadme(BaseModel):
     language: str = Field(default="en-US")
 
 
+class ParserLocalMarketplaceModelProviders(BaseModel):
+    query: str = ""
+    exclude: str = ""
+    collection_id: str | None = None
+
+
 class PluginDebuggingKeyResponse(ResponseModel):
     key: str
     host: str
@@ -360,6 +367,7 @@ register_schema_models(
     ParserAutoUpgradeFetch,
     ParserExcludePlugin,
     ParserReadme,
+    ParserLocalMarketplaceModelProviders,
 )
 register_response_schema_models(
     console_ns,
@@ -568,6 +576,33 @@ class PluginListInstallationsFromIdsApi(Resource):
             return {"code": "plugin_error", "message": e.description}, 400
 
         return jsonable_encoder({"plugins": plugins})
+
+
+@console_ns.route("/workspaces/current/plugin/marketplace/local-model-providers")
+class PluginLocalMarketplaceModelProvidersApi(Resource):
+    @console_ns.doc(params=query_params_from_model(ParserLocalMarketplaceModelProviders))
+    @setup_required
+    @login_required
+    @account_initialization_required
+    @with_current_tenant_id
+    def get(self, tenant_id: str):
+        args = ParserLocalMarketplaceModelProviders.model_validate(request.args.to_dict(flat=True))
+        exclude = [item.strip() for item in args.exclude.split(",") if item.strip()]
+        if args.collection_id:
+            plugins = OfflineMarketplaceService.list_model_collection_plugins(
+                tenant_id,
+                args.collection_id,
+                query=args.query,
+                exclude=exclude,
+            )
+        else:
+            plugins = OfflineMarketplaceService.list_model_plugins(
+                tenant_id,
+                query=args.query,
+                exclude=exclude,
+            )
+
+        return jsonable_encoder({"plugins": plugins, "total": len(plugins)})
 
 
 @console_ns.route("/workspaces/current/plugin/icon")

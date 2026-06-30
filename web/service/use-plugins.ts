@@ -55,6 +55,30 @@ type PluginTaskListResponse = {
   tasks: PluginTask[]
 }
 
+type LocalMarketplaceModelProvidersResponse = {
+  plugins: Plugin[]
+  total: number
+}
+
+export const fetchLocalMarketplaceModelProviders = (
+  params: {
+    query?: string
+    exclude?: string[]
+    collectionId?: string
+  },
+) => {
+  return get<LocalMarketplaceModelProvidersResponse>(
+    '/workspaces/current/plugin/marketplace/local-model-providers',
+    {
+      params: {
+        query: params.query || undefined,
+        exclude: params.exclude?.join(',') || undefined,
+        collection_id: params.collectionId,
+      },
+    },
+  )
+}
+
 const isUnfinishedPluginTask = (task: PluginTask) => task.status === TaskStatus.pending || task.status === TaskStatus.running
 
 const normalizeStartedPluginTask = (task: PluginTaskStart): PluginTask => ({

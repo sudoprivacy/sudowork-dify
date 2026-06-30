@@ -1062,6 +1062,14 @@ describe('hooks', () => {
   })
 
   describe('useMarketplaceAllPlugins', () => {
+    beforeEach(() => {
+      ; (useQuery as Mock).mockReturnValue({
+        data: { plugins: [] },
+        isPending: false,
+        isFetching: false,
+      })
+    })
+
     const createMockProviders = (): ModelProvider[] => [{
       provider: 'openai',
       label: { en_US: 'OpenAI', zh_Hans: 'OpenAI' },
@@ -1210,6 +1218,11 @@ describe('hooks', () => {
     })
 
     it('should handle loading states', () => {
+      ; (useQuery as Mock).mockReturnValue({
+        data: { plugins: [] },
+        isPending: false,
+        isFetching: false,
+      })
       ; (useMarketplacePluginsByCollectionId as Mock).mockReturnValue({
         plugins: [],
         isLoading: true,
@@ -1224,6 +1237,29 @@ describe('hooks', () => {
       const { result } = renderHook(() => useMarketplaceAllPlugins([], ''))
 
       expect(result.current.isLoading).toBe(true)
+    })
+
+    it('should use local model provider plugins when marketplace returns no plugins', () => {
+      const localPlugins = [{ plugin_id: 'langgenius/openai', type: 'plugin' }]
+      ; (useQuery as Mock).mockReturnValue({
+        data: { plugins: localPlugins },
+        isPending: false,
+        isFetching: false,
+      })
+      ; (useMarketplacePluginsByCollectionId as Mock).mockReturnValue({
+        plugins: [],
+        isLoading: false,
+      })
+      ; (useMarketplacePlugins as Mock).mockReturnValue({
+        plugins: [],
+        queryPlugins: vi.fn(),
+        queryPluginsWithDebounced: vi.fn(),
+        isLoading: false,
+      })
+
+      const { result } = renderHook(() => useMarketplaceAllPlugins([], ''))
+
+      expect(result.current.plugins).toEqual(localPlugins)
     })
 
     it('should not crash when plugins is undefined', () => {

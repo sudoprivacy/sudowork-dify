@@ -9,6 +9,7 @@ import type {
   ModelProvider,
   ModelTypeEnum,
 } from './declarations'
+import type { Plugin } from '@/app/components/plugins/types'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   useCallback,
@@ -32,12 +33,66 @@ import {
   getPayUrl,
 } from '@/service/common'
 import { commonQueryKeys } from '@/service/use-common'
+import { fetchLocalMarketplaceModelProviders } from '@/service/use-plugins'
 import { useExpandModelProviderList } from './atoms'
 import {
   ConfigurationMethodEnum,
   CustomConfigurationStatusEnum,
   ModelStatusEnum,
 } from './declarations'
+
+const LOCAL_MODEL_PROVIDER_COLLECTION_ID = '__model-settings-pinned-models'
+const EMPTY_LOCAL_MARKETPLACE_PLUGINS: Plugin[] = []
+
+const filterLocalMarketplacePlugins = (plugins: Plugin[], searchText: string) => {
+  const query = searchText.trim().toLowerCase()
+  if (!query)
+    return plugins
+
+  return plugins.filter((plugin) => {
+    const searchableValues = [
+      plugin.plugin_id,
+      plugin.name,
+      plugin.org,
+      ...Object.values(plugin.label || {}),
+      ...Object.values(plugin.brief || {}),
+      ...Object.values(plugin.description || {}),
+    ]
+
+    return searchableValues.some(value => value?.toLowerCase().includes(query))
+  })
+}
+
+const useLocalMarketplaceModelProviders = (
+  providers: ModelProvider[],
+  searchText: string,
+  enabled: boolean,
+) => {
+  const exclude = useMemo(() => {
+    return providers.map(provider => provider.provider.replace(/(.+)\/([^/]+)$/, '$1'))
+  }, [providers])
+
+  const { data, isPending, isFetching } = useQuery({
+    queryKey: ['localMarketplaceModelProviders', exclude],
+    queryFn: () => fetchLocalMarketplaceModelProviders({
+      exclude,
+      collectionId: LOCAL_MODEL_PROVIDER_COLLECTION_ID,
+    }),
+    enabled,
+    staleTime: 1000 * 60 * 5,
+    retry: false,
+  })
+  const allPlugins = data?.plugins || EMPTY_LOCAL_MARKETPLACE_PLUGINS
+  const plugins = useMemo(() => {
+    return filterLocalMarketplacePlugins(allPlugins, searchText)
+  }, [allPlugins, searchText])
+
+  return {
+    plugins,
+    hasPlugins: allPlugins.length > 0,
+    isLoading: enabled && (isPending || isFetching),
+  }
+}
 
 type UseDefaultModelAndModelList = (
   defaultModel: DefaultModelResponse | undefined,
@@ -116,7 +171,6 @@ export const useProviderCredentialsAndLoadBalancing = (
         : undefined
   }, [
     configurationMethod,
-    credentialId,
     currentCustomConfigurationModelFixedFields,
     customFormSchemasValue?.credentials,
     predefinedFormSchemasValue?.credentials,
@@ -167,6 +221,7 @@ export const useDefaultModel = (type: ModelTypeEnum) => {
   }
 }
 
+// eslint-disable-next-line react/no-unnecessary-use-prefix
 export const useCurrentProviderAndModel = (modelList: Model[], defaultModel?: DefaultModel) => {
   const currentProvider = modelList.find(provider => provider.provider === defaultModel?.provider)
   const currentModel = currentProvider?.models.find(model => model.model === defaultModel?.model)
@@ -272,9 +327,15 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
     return providers.map(provider => provider.provider.replace(/(.+)\/([^/]+)$/, '$1'))
   }, [providers])
   const {
+    plugins: localPlugins,
+    hasPlugins: hasLocalPlugins,
+    isLoading: isLocalPluginsLoading,
+  } = useLocalMarketplaceModelProviders(providers, searchText, enabled)
+  const shouldQueryMarketplace = enabled && !isLocalPluginsLoading && !hasLocalPlugins
+  const {
     plugins: collectionPlugins = [],
     isLoading: isCollectionLoading,
-  } = useMarketplacePluginsByCollectionId(enabled ? '__model-settings-pinned-models' : undefined)
+  } = useMarketplacePluginsByCollectionId(shouldQueryMarketplace ? LOCAL_MODEL_PROVIDER_COLLECTION_ID : undefined)
   const {
     plugins,
     queryPlugins,
@@ -285,7 +346,7 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
   } = useMarketplacePlugins()
 
   useEffect(() => {
-    if (!enabled) {
+    if (!shouldQueryMarketplace) {
       cancelQueryPluginsWithDebounced()
       resetPlugins()
       return
@@ -312,7 +373,15 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
         sort_order: 'DESC',
       })
     }
-  }, [cancelQueryPluginsWithDebounced, enabled, queryPlugins, queryPluginsWithDebounced, resetPlugins, searchText, exclude])
+  }, [
+    cancelQueryPluginsWithDebounced,
+    queryPlugins,
+    queryPluginsWithDebounced,
+    resetPlugins,
+    searchText,
+    exclude,
+    shouldQueryMarketplace,
+  ])
 
   const allPlugins = useMemo(() => {
     if (!enabled)
@@ -331,10 +400,12 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
 
     return allPlugins
   }, [enabled, plugins, collectionPlugins, exclude])
+  const marketplacePlugins = shouldQueryMarketplace && searchText ? plugins : allPlugins
+  const shouldUseLocalPlugins = enabled && (isLocalPluginsLoading || hasLocalPlugins)
 
   return {
-    plugins: enabled && searchText ? plugins : allPlugins,
-    isLoading: enabled && (isCollectionLoading || isPluginsLoading),
+    plugins: shouldUseLocalPlugins ? localPlugins : marketplacePlugins,
+    isLoading: enabled && (isLocalPluginsLoading || (!shouldUseLocalPlugins && (isCollectionLoading || isPluginsLoading))),
   }
 }
 
@@ -396,7 +467,7 @@ export const useModelModalHandler = () => {
       isModelCredential?: boolean
       credential?: Credential
       model?: CustomModel
-      onUpdate?: (newPayload: any, formValues?: Record<string, any>) => void
+      onUpdate?: (newPayload: unknown, formValues?: Record<string, unknown>) => void
       mode?: ModelModalModeEnum
     } = {},
   ) => {
