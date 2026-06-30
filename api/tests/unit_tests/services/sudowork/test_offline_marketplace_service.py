@@ -148,3 +148,53 @@ def test_list_model_collection_plugins_only_returns_pinned_model_collection(monk
     )
 
     assert [plugin["plugin_id"] for plugin in plugins] == ["langgenius/openai"]
+
+
+def test_list_model_plugins_falls_back_to_default_package_manifests(monkeypatch) -> None:
+    _patch_engine(monkeypatch, [])
+    monkeypatch.setattr(
+        service,
+        "list_default_model_packages",
+        lambda: [
+            {
+                "plugin_id": "langgenius/openai",
+                "plugin_unique_identifier": "langgenius/openai:0.4.2@local",
+                "package_path": "/tmp/openai.difypkg",
+                "manifest": _declaration(),
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "get_local_package_icon_url",
+        lambda plugin_unique_identifier, filename: (
+            "/console/api/workspaces/current/plugin/marketplace/local-model-provider-icon"
+            f"?plugin_unique_identifier={plugin_unique_identifier}&filename={filename}"
+        ),
+    )
+
+    result = service.OfflineMarketplaceService.list_model_plugins_result("tenant-1")
+
+    assert result["has_local_source"] is True
+    assert [plugin["plugin_id"] for plugin in result["plugins"]] == ["langgenius/openai"]
+    assert result["plugins"][0]["icon"].endswith("filename=openai.svg")
+
+
+def test_list_model_plugins_marks_local_source_when_package_query_has_no_match(monkeypatch) -> None:
+    _patch_engine(monkeypatch, [])
+    monkeypatch.setattr(
+        service,
+        "list_default_model_packages",
+        lambda: [
+            {
+                "plugin_id": "langgenius/openai",
+                "plugin_unique_identifier": "langgenius/openai:0.4.2@local",
+                "package_path": "/tmp/openai.difypkg",
+                "manifest": _declaration(),
+            }
+        ],
+    )
+
+    result = service.OfflineMarketplaceService.list_model_plugins_result("tenant-1", query="not-found")
+
+    assert result == {"plugins": [], "has_local_source": True}

@@ -1,4 +1,4 @@
-"""Expose locally declared plugin packages as marketplace-compatible data.
+"""Expose locally available model provider packages as marketplace-compatible data.
 
 Sudowork airgapped deployments seed model-provider ``.difypkg`` files into
 plugin_daemon and upload their declarations during tenant provisioning. The
@@ -6,11 +6,11 @@ normal Dify Studio provider list still searches marketplace.dify.ai from the
 browser, so an offline admin PC can see an empty install-provider grid even
 though the packages are already available locally.
 
-This service reads plugin_daemon's declaration table directly and returns the
-small marketplace shape the Studio model-provider UI needs. It is intentionally
-read-only and best-effort: malformed declarations are skipped, while missing
-plugin DB access simply yields an empty list so the online marketplace path can
-remain the primary source when available.
+This service prefers plugin_daemon's declaration table, but customer upgrade
+paths may have the package lockfile and package bytes mounted while
+``plugin_declarations`` is empty. In that case we parse the local package
+manifests directly and return the same small marketplace shape the Studio
+model-provider UI needs.
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ from sqlalchemy import text
 
 from core.plugin.plugin_service import PluginService
 from services.sudowork.install_redirect import _get_plugin_db_engine
+from services.sudowork.offline_plugin_package_service import (
+    get_local_package_icon_url,
+    list_default_model_packages,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,11 @@ LocalMarketplacePlugin = TypedDict(
         "from": str,
     },
 )
+
+
+class LocalMarketplaceResult(TypedDict):
+    plugins: list[LocalMarketplacePlugin]
+    has_local_source: bool
 
 
 def _coerce_i18n(value: Any) -> dict[str, str]:
@@ -125,6 +134,46 @@ def _declaration_to_marketplace_plugin(
     return plugin
 
 
+def _manifest_to_marketplace_plugin(
+    *,
+    plugin_unique_identifier: str,
+    plugin_id: str,
+    manifest: dict[str, Any],
+) -> LocalMarketplacePlugin | None:
+    version = str(manifest.get("version") or plugin_unique_identifier.split(":", 1)[-1].split("@", 1)[0])
+    name = str(manifest.get("name") or plugin_id.rsplit("/", 1)[-1])
+    icon = str(manifest.get("icon") or "")
+    icon_dark = str(manifest.get("icon_dark") or "")
+    tags = [_tag for tag in manifest.get("tags") or [] if (_tag := _normalize_tag(tag))]
+    plugin: LocalMarketplacePlugin = {
+        "type": "plugin",
+        "org": _org_from_plugin_id(plugin_id),
+        "author": manifest.get("author"),
+        "name": name,
+        "plugin_id": plugin_id,
+        "version": version,
+        "latest_version": version,
+        "latest_package_identifier": plugin_unique_identifier,
+        "icon": get_local_package_icon_url(plugin_unique_identifier, icon) if icon else "",
+        "verified": bool(manifest.get("verified", False)),
+        "label": _coerce_i18n(manifest.get("label")),
+        "brief": _coerce_i18n(manifest.get("description")),
+        "description": _coerce_i18n(manifest.get("description")),
+        "introduction": "",
+        "repository": str(manifest.get("repo") or ""),
+        "category": "model",
+        "install_count": 0,
+        "endpoint": {"settings": []},
+        "tags": tags,
+        "badges": None,
+        "verification": {"authorized_category": "community"},
+        "from": "marketplace",
+    }
+    if icon_dark:
+        plugin["icon_dark"] = get_local_package_icon_url(plugin_unique_identifier, icon_dark)
+    return plugin
+
+
 def _matches_query(plugin: LocalMarketplacePlugin, query: str) -> bool:
     query = query.strip().lower()
     if not query:
@@ -140,17 +189,23 @@ def _matches_query(plugin: LocalMarketplacePlugin, query: str) -> bool:
     return any(query in value.lower() for value in haystack if value)
 
 
+def _sort_plugins(plugins: list[LocalMarketplacePlugin]) -> list[LocalMarketplacePlugin]:
+    plugins.sort(key=lambda plugin: plugin["label"].get("en_US") or plugin["name"])
+    return plugins
+
+
 class OfflineMarketplaceService:
     @staticmethod
-    def list_model_plugins(
+    def list_model_plugins_result(
         tenant_id: str,
         *,
         query: str = "",
         exclude: list[str] | None = None,
-    ) -> list[LocalMarketplacePlugin]:
-        """Return locally declared model plugins in marketplace card shape."""
+    ) -> LocalMarketplaceResult:
+        """Return local model plugins and whether an offline source exists."""
 
         excluded_plugin_ids = set(exclude or [])
+        plugins: list[LocalMarketplacePlugin] = []
         try:
             engine = _get_plugin_db_engine()
             with engine.connect() as conn:
@@ -187,10 +242,56 @@ class OfflineMarketplaceService:
                         plugins.append(plugin)
         except Exception:
             logger.exception("sudowork_offline_marketplace_list_failed")
-            return []
+            plugins = []
 
-        plugins.sort(key=lambda plugin: plugin["label"].get("en_US") or plugin["name"])
-        return plugins
+        if plugins:
+            return {"plugins": _sort_plugins(plugins), "has_local_source": True}
+
+        default_packages = list_default_model_packages()
+        package_plugins: list[LocalMarketplacePlugin] = []
+        for package in default_packages:
+            plugin_id = package["plugin_id"]
+            if plugin_id in excluded_plugin_ids:
+                continue
+
+            plugin = _manifest_to_marketplace_plugin(
+                plugin_unique_identifier=package["plugin_unique_identifier"],
+                plugin_id=plugin_id,
+                manifest=package["manifest"],
+            )
+            if plugin and _matches_query(plugin, query):
+                package_plugins.append(plugin)
+
+        if package_plugins:
+            return {"plugins": _sort_plugins(package_plugins), "has_local_source": True}
+
+        return {"plugins": [], "has_local_source": bool(default_packages)}
+
+    @staticmethod
+    def list_model_plugins(
+        tenant_id: str,
+        *,
+        query: str = "",
+        exclude: list[str] | None = None,
+    ) -> list[LocalMarketplacePlugin]:
+        result = OfflineMarketplaceService.list_model_plugins_result(tenant_id, query=query, exclude=exclude)
+        return result["plugins"]
+
+    @staticmethod
+    def list_model_collection_plugins_result(
+        tenant_id: str,
+        collection_id: str,
+        *,
+        query: str = "",
+        exclude: list[str] | None = None,
+    ) -> LocalMarketplaceResult:
+        if collection_id != _DEFAULT_MODEL_COLLECTION_ID:
+            return {"plugins": [], "has_local_source": False}
+        return OfflineMarketplaceService.list_model_plugins_result(tenant_id, query=query, exclude=exclude)
+
+    @staticmethod
+    def has_local_model_source() -> bool:
+        return bool(list_default_model_packages())
 
     @staticmethod
     def list_model_collection_plugins(
@@ -200,14 +301,10 @@ class OfflineMarketplaceService:
         query: str = "",
         exclude: list[str] | None = None,
     ) -> list[LocalMarketplacePlugin]:
-        """Return the pinned model collection from local declarations.
-
-        The Dify model settings page uses the marketplace collection id
-        ``__model-settings-pinned-models`` for its default provider strip.
-        In offline Sudowork deployments every locally declared model package is
-        already intentionally curated, so the collection maps to that same list.
-        """
-
-        if collection_id != _DEFAULT_MODEL_COLLECTION_ID:
-            return []
-        return OfflineMarketplaceService.list_model_plugins(tenant_id, query=query, exclude=exclude)
+        result = OfflineMarketplaceService.list_model_collection_plugins_result(
+            tenant_id,
+            collection_id,
+            query=query,
+            exclude=exclude,
+        )
+        return result["plugins"]

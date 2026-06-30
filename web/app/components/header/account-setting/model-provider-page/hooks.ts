@@ -89,7 +89,7 @@ const useLocalMarketplaceModelProviders = (
 
   return {
     plugins,
-    hasPlugins: allPlugins.length > 0,
+    hasLocalSource: !!data?.has_local_source,
     isLoading: enabled && (isPending || isFetching),
   }
 }
@@ -328,10 +328,10 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
   }, [providers])
   const {
     plugins: localPlugins,
-    hasPlugins: hasLocalPlugins,
+    hasLocalSource,
     isLoading: isLocalPluginsLoading,
   } = useLocalMarketplaceModelProviders(providers, searchText, enabled)
-  const shouldQueryMarketplace = enabled && !isLocalPluginsLoading && !hasLocalPlugins
+  const shouldQueryMarketplace = enabled && !isLocalPluginsLoading && !hasLocalSource
   const {
     plugins: collectionPlugins = [],
     isLoading: isCollectionLoading,
@@ -401,7 +401,7 @@ export const useMarketplaceAllPlugins = (providers: ModelProvider[], searchText:
     return allPlugins
   }, [enabled, plugins, collectionPlugins, exclude])
   const marketplacePlugins = shouldQueryMarketplace && searchText ? plugins : allPlugins
-  const shouldUseLocalPlugins = enabled && (isLocalPluginsLoading || hasLocalPlugins)
+  const shouldUseLocalPlugins = enabled && (isLocalPluginsLoading || hasLocalSource)
 
   return {
     plugins: shouldUseLocalPlugins ? localPlugins : marketplacePlugins,

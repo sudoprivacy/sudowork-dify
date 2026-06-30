@@ -37,7 +37,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional, Sequence
+from collections.abc import Sequence
+
+from services.sudowork.offline_plugin_package_service import resolve_default_package_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ def _get_plugin_db_engine():
     return _plugin_db_engine
 
 
-def _resolve_to_local_identifier(requested_uid: str) -> Optional[str]:
+def _resolve_to_local_identifier(requested_uid: str) -> str | None:
     """Map an upstream marketplace identifier (`<org>/<id>:<ver>@<sha_upstream>`)
     to whatever sha we have locally for the same `<org>/<id>:<ver>`. Returns
     the local uid, or None if no matching declaration exists.
@@ -82,10 +84,12 @@ def _resolve_to_local_identifier(requested_uid: str) -> Optional[str]:
                 ),
                 {"p": f"{prefix}@%"},
             ).fetchone()
-        return row[0] if row else None
+        if row:
+            return row[0]
+        return resolve_default_package_identifier(requested_uid)
     except Exception:
         logger.exception("sudowork_resolve_local_identifier_failed prefix=%s", prefix)
-        return None
+        return resolve_default_package_identifier(requested_uid)
 
 
 def _silence_category_list_404() -> None:

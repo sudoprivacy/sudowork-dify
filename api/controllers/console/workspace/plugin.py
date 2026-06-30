@@ -46,6 +46,7 @@ from services.plugin.plugin_auto_upgrade_service import PluginAutoUpgradeService
 from services.plugin.plugin_parameter_service import PluginParameterService
 from services.plugin.plugin_permission_service import PluginPermissionService
 from services.sudowork.offline_marketplace_service import OfflineMarketplaceService
+from services.sudowork.offline_plugin_package_service import extract_default_package_asset
 from services.tools.tools_transform_service import ToolTransformService
 
 
@@ -233,6 +234,11 @@ class ParserLocalMarketplaceModelProviders(BaseModel):
     collection_id: str | None = None
 
 
+class ParserLocalMarketplaceModelProviderIcon(BaseModel):
+    plugin_unique_identifier: str
+    filename: str
+
+
 class PluginDebuggingKeyResponse(ResponseModel):
     key: str
     host: str
@@ -368,6 +374,7 @@ register_schema_models(
     ParserExcludePlugin,
     ParserReadme,
     ParserLocalMarketplaceModelProviders,
+    ParserLocalMarketplaceModelProviderIcon,
 )
 register_response_schema_models(
     console_ns,
@@ -589,20 +596,41 @@ class PluginLocalMarketplaceModelProvidersApi(Resource):
         args = ParserLocalMarketplaceModelProviders.model_validate(request.args.to_dict(flat=True))
         exclude = [item.strip() for item in args.exclude.split(",") if item.strip()]
         if args.collection_id:
-            plugins = OfflineMarketplaceService.list_model_collection_plugins(
+            result = OfflineMarketplaceService.list_model_collection_plugins_result(
                 tenant_id,
                 args.collection_id,
                 query=args.query,
                 exclude=exclude,
             )
         else:
-            plugins = OfflineMarketplaceService.list_model_plugins(
+            result = OfflineMarketplaceService.list_model_plugins_result(
                 tenant_id,
                 query=args.query,
                 exclude=exclude,
             )
 
-        return jsonable_encoder({"plugins": plugins, "total": len(plugins)})
+        return jsonable_encoder(
+            {
+                "plugins": result["plugins"],
+                "total": len(result["plugins"]),
+                "has_local_source": result["has_local_source"],
+            }
+        )
+
+
+@console_ns.route("/workspaces/current/plugin/marketplace/local-model-provider-icon")
+class PluginLocalMarketplaceModelProviderIconApi(Resource):
+    @console_ns.doc(params=query_params_from_model(ParserLocalMarketplaceModelProviderIcon))
+    @console_ns.response(200, "Success", console_ns.models[BinaryFileResponse.__name__])
+    @setup_required
+    def get(self):
+        args = ParserLocalMarketplaceModelProviderIcon.model_validate(request.args.to_dict(flat=True))
+        asset = extract_default_package_asset(args.plugin_unique_identifier, args.filename)
+        if not asset:
+            return {"code": "not_found", "message": "local plugin asset not found"}, 404
+
+        icon_cache_max_age = dify_config.TOOL_ICON_CACHE_MAX_AGE
+        return send_file(io.BytesIO(asset["content"]), mimetype=asset["mimetype"], max_age=icon_cache_max_age)
 
 
 @console_ns.route("/workspaces/current/plugin/icon")

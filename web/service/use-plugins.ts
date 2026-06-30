@@ -58,6 +58,7 @@ type PluginTaskListResponse = {
 type LocalMarketplaceModelProvidersResponse = {
   plugins: Plugin[]
   total: number
+  has_local_source?: boolean
 }
 
 export const fetchLocalMarketplaceModelProviders = (

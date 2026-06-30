@@ -1064,7 +1064,7 @@ describe('hooks', () => {
   describe('useMarketplaceAllPlugins', () => {
     beforeEach(() => {
       ; (useQuery as Mock).mockReturnValue({
-        data: { plugins: [] },
+        data: { plugins: [], has_local_source: false },
         isPending: false,
         isFetching: false,
       })
@@ -1219,7 +1219,7 @@ describe('hooks', () => {
 
     it('should handle loading states', () => {
       ; (useQuery as Mock).mockReturnValue({
-        data: { plugins: [] },
+        data: { plugins: [], has_local_source: false },
         isPending: false,
         isFetching: false,
       })
@@ -1242,7 +1242,7 @@ describe('hooks', () => {
     it('should use local model provider plugins when marketplace returns no plugins', () => {
       const localPlugins = [{ plugin_id: 'langgenius/openai', type: 'plugin' }]
       ; (useQuery as Mock).mockReturnValue({
-        data: { plugins: localPlugins },
+        data: { plugins: localPlugins, has_local_source: true },
         isPending: false,
         isFetching: false,
       })
@@ -1260,6 +1260,39 @@ describe('hooks', () => {
       const { result } = renderHook(() => useMarketplaceAllPlugins([], ''))
 
       expect(result.current.plugins).toEqual(localPlugins)
+    })
+
+    it('should not query marketplace when a local source exists but search has no match', () => {
+      const queryPlugins = vi.fn()
+      const queryPluginsWithDebounced = vi.fn()
+      ; (useQuery as Mock).mockReturnValue({
+        data: {
+          plugins: [{
+            plugin_id: 'langgenius/openai',
+            name: 'openai',
+            org: 'langgenius',
+            label: { en_US: 'OpenAI' },
+            brief: { en_US: 'OpenAI models' },
+            description: { en_US: 'OpenAI models' },
+          }],
+          has_local_source: true,
+        },
+        isPending: false,
+        isFetching: false,
+      })
+      ; (useMarketplacePlugins as Mock).mockReturnValue({
+        plugins: [],
+        queryPlugins,
+        queryPluginsWithDebounced,
+        isLoading: false,
+      })
+
+      const { result } = renderHook(() => useMarketplaceAllPlugins([], 'not-found'))
+
+      expect(result.current.plugins).toEqual([])
+      expect(queryPlugins).not.toHaveBeenCalled()
+      expect(queryPluginsWithDebounced).not.toHaveBeenCalled()
+      expect(useMarketplacePluginsByCollectionId).toHaveBeenCalledWith(undefined)
     })
 
     it('should not crash when plugins is undefined', () => {
