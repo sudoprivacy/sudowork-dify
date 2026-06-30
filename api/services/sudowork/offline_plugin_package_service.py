@@ -45,6 +45,35 @@ class LocalPackageAsset(TypedDict):
     mimetype: str
 
 
+class LocalPackageBytes(TypedDict):
+    plugin_unique_identifier: str
+    content: bytes
+
+
+class LocalPackageManifest(TypedDict):
+    version: str
+    author: str | None
+    name: str
+    description: dict[str, Any]
+    icon: str
+    icon_dark: str | None
+    label: dict[str, Any]
+    category: str
+    created_at: str
+    resource: dict[str, Any]
+    plugins: dict[str, Any]
+    tags: list[str]
+    repo: str | None
+    verified: bool
+    tool: dict[str, Any] | None
+    model: dict[str, Any] | None
+    endpoint: dict[str, Any] | None
+    agent_strategy: dict[str, Any] | None
+    datasource: dict[str, Any] | None
+    trigger: dict[str, Any] | None
+    meta: dict[str, Any]
+
+
 class _ResolvedPackage(TypedDict):
     plugin_unique_identifier: str
     package_path: str
@@ -168,6 +197,70 @@ def resolve_default_package_identifier(requested_uid: str) -> str | None:
         if resolved:
             return resolved["plugin_unique_identifier"]
     return None
+
+
+def get_default_package_manifest(requested_uid: str) -> LocalPackageManifest | None:
+    """Return the marketplace manifest shape from a pre-seeded local package.
+
+    ``/plugin/marketplace/pkg`` can be called before plugin_daemon has a
+    declaration row for the requested tenant. In airgapped installs, falling
+    back to marketplace download would hang, so the local package manifest is
+    used as read-only metadata when the package cache contains the plugin.
+    """
+    resolved_uid = resolve_default_package_identifier(requested_uid)
+    if not resolved_uid:
+        return None
+
+    package_path = _resolve_package_path(resolved_uid)
+    if not package_path:
+        return None
+
+    manifest = _read_manifest(package_path)
+    if not manifest or not _is_model_package_manifest(manifest):
+        return None
+
+    return {
+        "version": str(manifest.get("version", "")),
+        "author": manifest.get("author"),
+        "name": str(manifest.get("name", "")),
+        "description": manifest.get("description") or {},
+        "icon": str(manifest.get("icon", "")),
+        "icon_dark": manifest.get("icon_dark"),
+        "label": manifest.get("label") or {},
+        "category": "model",
+        "created_at": str(manifest.get("created_at") or "1970-01-01T00:00:00Z"),
+        "resource": manifest.get("resource") or {},
+        "plugins": manifest.get("plugins") or {},
+        "tags": manifest.get("tags") or [],
+        "repo": manifest.get("repo"),
+        "verified": bool(manifest.get("verified", False)),
+        "tool": manifest.get("tool"),
+        "model": manifest.get("model"),
+        "endpoint": manifest.get("endpoint"),
+        "agent_strategy": manifest.get("agent_strategy"),
+        "datasource": manifest.get("datasource"),
+        "trigger": manifest.get("trigger"),
+        "meta": manifest.get("meta") or {},
+    }
+
+
+def read_default_package(requested_uid: str) -> LocalPackageBytes | None:
+    resolved_uid = resolve_default_package_identifier(requested_uid)
+    if not resolved_uid:
+        return None
+
+    package_path = _resolve_package_path(resolved_uid)
+    if not package_path:
+        return None
+
+    try:
+        return {
+            "plugin_unique_identifier": resolved_uid,
+            "content": Path(package_path).read_bytes(),
+        }
+    except Exception:
+        logger.warning("sudowork_offline_package_unreadable uid=%s path=%s", requested_uid, package_path, exc_info=True)
+        return None
 
 
 def get_local_package_icon_url(plugin_unique_identifier: str, filename: str) -> str:

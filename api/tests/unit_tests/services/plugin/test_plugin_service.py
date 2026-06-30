@@ -610,6 +610,54 @@ class TestPluginModelProviderCacheInvalidation:
         assert result == "task-id"
         invalidate_cache.assert_called_once_with("tenant-1")
 
+    def test_fetch_marketplace_pkg_uses_local_manifest_before_marketplace_download(self) -> None:
+        """Daemon declaration misses in airgapped installs should not fetch marketplace package bytes."""
+        local_manifest = {
+            "version": "0.0.53",
+            "author": "langgenius",
+            "name": "openai_api_compatible",
+            "description": {"en_US": "OpenAI-API-compatible models"},
+            "icon": "icon.svg",
+            "label": {"en_US": "OpenAI-API-compatible"},
+            "category": "model",
+            "created_at": "1970-01-01T00:00:00Z",
+            "resource": {},
+            "plugins": {"models": ["provider/openai_api_compatible.yaml"]},
+            "tags": [],
+            "repo": None,
+            "verified": False,
+            "tool": None,
+            "model": None,
+            "endpoint": None,
+            "agent_strategy": None,
+            "datasource": None,
+            "trigger": None,
+            "meta": {},
+        }
+
+        with (
+            patch(f"{MODULE}.dify_config") as mock_config,
+            patch(f"{MODULE}.PluginInstaller") as installer_cls,
+            patch(f"{MODULE}.download_plugin_pkg", side_effect=AssertionError("download should not be called")),
+            patch(
+                "services.sudowork.offline_plugin_package_service.get_default_package_manifest",
+                return_value=local_manifest,
+            ),
+        ):
+            mock_config.MARKETPLACE_ENABLED = True
+            installer = installer_cls.return_value
+            installer.fetch_plugin_manifest.side_effect = RuntimeError("plugin not found")
+
+            from core.plugin.plugin_service import PluginService
+
+            result = PluginService.fetch_marketplace_pkg(
+                "tenant-1",
+                "langgenius/openai_api_compatible:0.0.53@marketplace",
+            )
+
+        assert result == local_manifest
+        installer.upload_pkg.assert_not_called()
+
     def test_uninstall_invalidates_model_provider_cache_for_tenant(self) -> None:
         """Successful uninstall invalidates only the mutated tenant provider cache."""
         with (

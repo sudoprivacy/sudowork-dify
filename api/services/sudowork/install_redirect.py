@@ -1,5 +1,4 @@
-"""Redirect `install_from_marketplace_pkg` to `install_from_local_pkg`
-when the requested plugin is already declared locally.
+"""Redirect `install_from_marketplace_pkg` to local pre-seeded packages.
 
 Dify's "Install from Marketplace" button on the Studio "Model Providers"
 page calls /workspaces/current/plugin/install/marketplace, which fans
@@ -9,10 +8,12 @@ downloads the .difypkg from marketplace.dify.ai on demand.
 That's wrong for a Sudowork deployment:
   - The customer host has no PyPI / marketplace.dify.ai egress.
   - We've already pre-seeded every .difypkg + every transitive wheel
-    via seed-plugins.sh, and tenant_provisioning_service has called
-    upload_pkg to register declarations on the daemon side.
-  - So any subsequent install should source from the local cache, not
-    fetch fresh — fast, offline, no network bill.
+    via seed-plugins.sh. Fresh tenants normally get daemon declarations
+    during provisioning, but upgraded tenants may still have an empty
+    plugin_declarations table.
+  - So any subsequent install should source from the local cache, uploading
+    the cached package to plugin_daemon first when its declaration is missing.
+    That keeps the path fast, offline, and free of marketplace fetches.
 
 We patch the service method (not the controller) so the redirect
 covers every caller: console UI, internal scripts, API consumers.
@@ -39,7 +40,7 @@ import logging
 import os
 from collections.abc import Sequence
 
-from services.sudowork.offline_plugin_package_service import resolve_default_package_identifier
+from services.sudowork.offline_plugin_package_service import read_default_package, resolve_default_package_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,43 @@ def _resolve_to_local_identifier(requested_uid: str) -> str | None:
     except Exception:
         logger.exception("sudowork_resolve_local_identifier_failed prefix=%s", prefix)
         return resolve_default_package_identifier(requested_uid)
+
+
+def _ensure_local_identifier_uploaded(tenant_id: str, local_uid: str) -> str:
+    """Make plugin_daemon aware of a pre-seeded local package before install.
+
+    Older upgraded tenants can have package files and lockfile entries while
+    ``plugin_declarations`` is empty. In that state, installing by identifier
+    alone fails with "plugin not found", so upload the local package bytes
+    first and install the decoded identifier returned by plugin_daemon.
+    """
+    from core.plugin.impl.plugin import PluginInstaller
+    from core.plugin.plugin_service import PluginService
+    from services.feature_service import FeatureService
+
+    manager = PluginInstaller()
+    try:
+        manager.fetch_plugin_manifest(tenant_id, local_uid)
+        return local_uid
+    except Exception:
+        package = read_default_package(local_uid)
+        if package is None:
+            raise
+
+    features = FeatureService.get_system_features()
+    response = manager.upload_pkg(
+        tenant_id,
+        package["content"],
+        verify_signature=features.plugin_installation_permission.restrict_to_marketplace_only,
+    )
+    PluginService._check_plugin_installation_scope(response.verification)
+    logger.info(
+        "sudowork_local_package_uploaded tenant=%s requested=%s uploaded=%s",
+        tenant_id,
+        local_uid,
+        response.unique_identifier,
+    )
+    return response.unique_identifier
 
 
 def _silence_category_list_404() -> None:
@@ -160,6 +198,7 @@ def apply_marketplace_to_local_redirect() -> None:
             resolved.append(local_uid)
 
         if all_local:
+            resolved = [_ensure_local_identifier_uploaded(tenant_id, uid) for uid in resolved]
             logger.info(
                 "sudowork_install_short_circuit tenant=%s requested=%s resolved=%s reason=declared_locally",
                 tenant_id,

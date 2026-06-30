@@ -816,7 +816,12 @@ class PluginService:
     @staticmethod
     def fetch_marketplace_pkg(tenant_id: str, plugin_unique_identifier: str) -> PluginDeclaration:
         """
-        Fetch marketplace package
+        Fetch marketplace package metadata.
+
+        Airgapped Sudowork deployments pre-seed package files locally, but
+        plugin_daemon may not have tenant declaration rows yet. When daemon
+        lookup misses, prefer the local manifest before attempting any
+        marketplace download.
         """
         if not dify_config.MARKETPLACE_ENABLED:
             raise ValueError("marketplace is not enabled")
@@ -827,6 +832,12 @@ class PluginService:
         try:
             declaration = manager.fetch_plugin_manifest(tenant_id, plugin_unique_identifier)
         except Exception:
+            from services.sudowork.offline_plugin_package_service import get_default_package_manifest
+
+            local_declaration = get_default_package_manifest(plugin_unique_identifier)
+            if local_declaration:
+                return local_declaration  # type: ignore[return-value]
+
             pkg = download_plugin_pkg(plugin_unique_identifier)
             response = manager.upload_pkg(
                 tenant_id,

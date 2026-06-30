@@ -70,6 +70,29 @@ def test_resolve_default_package_identifier_uses_actual_local_package_identifier
     assert identifier == "langgenius/openai:0.4.2@local"
 
 
+def test_get_default_package_manifest_returns_marketplace_response_shape(monkeypatch, tmp_path) -> None:
+    _patch_package_paths(monkeypatch, tmp_path, lock_sha="marketplace", file_sha="local")
+
+    manifest = service.get_default_package_manifest("langgenius/openai:0.4.2@upstream")
+
+    assert manifest is not None
+    assert manifest["name"] == "openai"
+    assert manifest["category"] == "model"
+    assert manifest["plugins"] == {"models": ["provider/openai.yaml"]}
+    assert manifest["created_at"] == "1970-01-01T00:00:00Z"
+    assert manifest["meta"] == {}
+
+
+def test_read_default_package_uses_actual_local_package_identifier(monkeypatch, tmp_path) -> None:
+    _patch_package_paths(monkeypatch, tmp_path, lock_sha="marketplace", file_sha="local")
+
+    package = service.read_default_package("langgenius/openai:0.4.2@upstream")
+
+    assert package is not None
+    assert package["plugin_unique_identifier"] == "langgenius/openai:0.4.2@local"
+    assert package["content"]
+
+
 def test_extract_default_package_asset_reads_safe_asset(monkeypatch, tmp_path) -> None:
     plugin_unique_identifier = _patch_package_paths(monkeypatch, tmp_path)
 
