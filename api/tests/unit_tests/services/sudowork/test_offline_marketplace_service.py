@@ -135,6 +135,29 @@ def test_list_model_plugins_filters_by_query_and_exclude(monkeypatch) -> None:
     assert [plugin["plugin_id"] for plugin in plugins] == ["langgenius/anthropic"]
 
 
+def test_list_model_plugins_ignores_declarations_removed_from_default_list(monkeypatch) -> None:
+    _patch_engine(
+        monkeypatch,
+        [
+            _row(
+                "langgenius/sagemaker",
+                "langgenius/sagemaker:0.0.17@local",
+                _declaration(name="sagemaker", label="Amazon SageMaker"),
+            ),
+            _row("langgenius/openai", "langgenius/openai:0.4.2@local", _declaration()),
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "is_enabled_default_plugin",
+        lambda plugin_unique_identifier: "sagemaker" not in plugin_unique_identifier,
+    )
+
+    plugins = service.OfflineMarketplaceService.list_model_plugins("tenant-1")
+
+    assert [plugin["plugin_id"] for plugin in plugins] == ["langgenius/openai"]
+
+
 def test_list_model_collection_plugins_only_returns_pinned_model_collection(monkeypatch) -> None:
     _patch_engine(
         monkeypatch,

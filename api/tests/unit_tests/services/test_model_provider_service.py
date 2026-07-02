@@ -620,6 +620,36 @@ class TestModelProviderServiceListingsAndDefaults:
         factory_instance.get_provider_icon.assert_called_once_with("openai", "icon_small", "en_US")
         assert result == (b"icon-bytes", "image/png")
 
+    def test_get_model_provider_icon_should_fallback_to_local_package_when_factory_asset_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        service = ModelProviderService()
+        factory_instance = MagicMock()
+        factory_instance.get_provider_icon.side_effect = ValueError("can not found asset icon.svg")
+        factory_constructor = MagicMock(return_value=factory_instance)
+        local_icon_reader = MagicMock(return_value={"content": b"local-icon", "mimetype": "image/svg+xml"})
+        monkeypatch.setattr(service_module, "create_plugin_model_provider_factory", factory_constructor)
+        monkeypatch.setattr(service_module, "extract_default_model_provider_icon", local_icon_reader)
+
+        result = service.get_model_provider_icon(
+            tenant_id="tenant-1",
+            provider="langgenius/openai/openai",
+            icon_type="icon_small",
+            lang="en_US",
+        )
+
+        factory_constructor.assert_called_once_with(tenant_id="tenant-1")
+        factory_instance.get_provider_icon.assert_called_once_with(
+            "langgenius/openai/openai", "icon_small", "en_US"
+        )
+        local_icon_reader.assert_called_once_with(
+            provider="langgenius/openai/openai",
+            icon_type="icon_small",
+            lang="en_US",
+        )
+        assert result == (b"local-icon", "image/svg+xml")
+
     def test_switch_preferred_provider_should_convert_enum_and_delegate(
         self,
         monkeypatch: pytest.MonkeyPatch,

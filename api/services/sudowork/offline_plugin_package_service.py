@@ -27,6 +27,10 @@ _DEFAULT_PLUGINS_LOCK_PATH = os.environ.get(
     "SUDOWORK_DEFAULT_PLUGINS_LOCK",
     "/app/api/sudowork_patches/default-plugins.lock.json",
 )
+_DEFAULT_PLUGINS_LIST_PATH = os.environ.get(
+    "SUDOWORK_DEFAULT_PLUGINS_LIST",
+    "/app/api/sudowork_patches/default-plugins.json",
+)
 _DEFAULT_PLUGINS_PKG_DIR = os.environ.get(
     "SUDOWORK_DEFAULT_PLUGINS_PKG_DIR",
     "/app/api/sudowork_patches/plugin_packages/langgenius",
@@ -108,7 +112,47 @@ def _load_lock_identifiers() -> list[str]:
     resolved = doc.get("resolved")
     if not isinstance(resolved, dict):
         return []
-    return [str(identifier) for identifier in resolved.values() if identifier]
+
+    enabled_specs = _load_enabled_plugin_specs()
+    if enabled_specs is None:
+        return [str(identifier) for identifier in resolved.values() if identifier]
+
+    return [
+        str(identifier)
+        for spec, identifier in resolved.items()
+        if spec in enabled_specs and identifier
+    ]
+
+
+def _load_enabled_plugin_specs() -> set[str] | None:
+    """Return the active plugin specs from ``default-plugins.json`` when present.
+
+    The generated lockfile can lag behind the curated list after an operator
+    removes a plugin. Filtering lockfile rows by the active list prevents stale
+    packages, such as sdist-only providers, from showing up in airgapped
+    deployments.
+    """
+    if not os.path.isfile(_DEFAULT_PLUGINS_LIST_PATH):
+        return None
+
+    try:
+        with open(_DEFAULT_PLUGINS_LIST_PATH, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        logger.exception("sudowork_offline_package_list_unreadable path=%s", _DEFAULT_PLUGINS_LIST_PATH)
+        return None
+
+    plugins = doc.get("plugins")
+    if not isinstance(plugins, list):
+        return None
+    return {str(spec) for spec in plugins if spec}
+
+
+def is_enabled_default_plugin(plugin_unique_identifier: str) -> bool:
+    enabled_specs = _load_enabled_plugin_specs()
+    if enabled_specs is None:
+        return True
+    return _identifier_prefix(plugin_unique_identifier) in enabled_specs
 
 
 def _resolve_package_path(plugin_unique_identifier: str) -> str | None:
@@ -268,10 +312,17 @@ def get_local_package_icon_url(plugin_unique_identifier: str, filename: str) -> 
     return f"/console/api/workspaces/current/plugin/marketplace/local-model-provider-icon?{query}"
 
 
-def _safe_asset_candidates(filename: str) -> list[str]:
+def _safe_package_path(filename: str) -> str | None:
     normalized = filename.removeprefix("./").lstrip("/")
     path = PurePosixPath(normalized)
     if not normalized or path.is_absolute() or ".." in path.parts:
+        return None
+    return normalized
+
+
+def _safe_asset_candidates(filename: str) -> list[str]:
+    normalized = _safe_package_path(filename)
+    if normalized is None:
         return []
 
     candidates = [normalized]
@@ -310,4 +361,101 @@ def extract_default_package_asset(plugin_unique_identifier: str, filename: str) 
             filename,
             exc_info=True,
         )
+    return None
+
+
+def _model_provider_paths(manifest: dict[str, Any]) -> list[str]:
+    plugins = manifest.get("plugins")
+    if not isinstance(plugins, dict):
+        return []
+
+    models = plugins.get("models")
+    if isinstance(models, str):
+        return [models]
+    if not isinstance(models, list):
+        return []
+    return [model for model in models if isinstance(model, str)]
+
+
+def _provider_matches_request(requested_provider: str, plugin_id: str, provider_name: str) -> bool:
+    requested = requested_provider.strip("/")
+    if not requested or not provider_name:
+        return False
+
+    if requested in {provider_name, plugin_id, f"{plugin_id}/{provider_name}"}:
+        return True
+
+    parts = requested.split("/")
+    if len(parts) == 1:
+        plugin_name = plugin_id.split("/", 1)[1] if "/" in plugin_id else plugin_id
+        return requested in {plugin_name, provider_name}
+    if len(parts) == 2:
+        return requested == plugin_id
+    if len(parts) == 3:
+        organization, plugin_name, requested_provider_name = parts
+        return plugin_id == f"{organization}/{plugin_name}" and provider_name == requested_provider_name
+    return False
+
+
+def _localized_icon_filename(icon: Any, lang: str) -> str | None:
+    if isinstance(icon, str):
+        return icon
+    if not isinstance(icon, dict):
+        return None
+
+    normalized_lang = lang.lower().replace("-", "_")
+    preferred_keys = ("zh_Hans", "zh_hans") if normalized_lang == "zh_hans" else ("en_US", "en_us")
+    for key in preferred_keys:
+        value = icon.get(key)
+        if isinstance(value, str) and value:
+            return value
+
+    for value in icon.values():
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def extract_default_model_provider_icon(provider: str, icon_type: str, lang: str) -> LocalPackageAsset | None:
+    """Read a model provider icon from the pre-seeded local plugin packages.
+
+    Installed model providers normally serve icons through plugin_daemon's
+    asset cache. In airgapped upgrades the declaration can exist while that
+    asset cache is missing, so the package zip remains the only reliable local
+    source for ``provider/*.yaml`` metadata and ``_assets`` icon bytes.
+    """
+    icon_key = icon_type.lower()
+    for package in list_default_model_packages():
+        provider_paths = _model_provider_paths(package["manifest"])
+        if not provider_paths:
+            continue
+
+        try:
+            with zipfile.ZipFile(package["package_path"]) as package_zip:
+                names = set(package_zip.namelist())
+                for provider_path in provider_paths:
+                    safe_provider_path = _safe_package_path(provider_path)
+                    if safe_provider_path is None or safe_provider_path not in names:
+                        continue
+
+                    raw_provider = package_zip.read(safe_provider_path)
+                    provider_doc = yaml.safe_load(raw_provider.decode("utf-8"))
+                    if not isinstance(provider_doc, dict):
+                        continue
+
+                    provider_name = str(provider_doc.get("provider") or "")
+                    if not _provider_matches_request(provider, package["plugin_id"], provider_name):
+                        continue
+
+                    icon_filename = _localized_icon_filename(provider_doc.get(icon_key), lang)
+                    if not icon_filename:
+                        return None
+                    return extract_default_package_asset(package["plugin_unique_identifier"], icon_filename)
+        except Exception:
+            logger.warning(
+                "sudowork_offline_model_provider_icon_unreadable provider=%s package=%s",
+                provider,
+                package["package_path"],
+                exc_info=True,
+            )
     return None

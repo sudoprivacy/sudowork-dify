@@ -190,6 +190,30 @@ rsync -a \
     --exclude='build-offline-bundle.sh' \
     "$SCRIPT_DIR/" "$STAGING_DIR/$EXTRACT_DIR_NAME/docker/"
 
+python3 - "$STAGING_DIR/$EXTRACT_DIR_NAME/docker" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+docker_dir = Path(sys.argv[1])
+lockfile = docker_dir / "sudowork-patches" / "default-plugins.lock.json"
+package_dir = docker_dir / "volumes" / "plugin_daemon" / "plugin_packages" / "langgenius"
+
+if not lockfile.exists() or not package_dir.is_dir():
+    raise SystemExit(0)
+
+doc = json.loads(lockfile.read_text(encoding="utf-8"))
+expected_prefixes = {
+    identifier.split("/", 1)[1].split("@", 1)[0]
+    for identifier in doc.get("resolved", {}).values()
+    if isinstance(identifier, str) and "/" in identifier
+}
+
+for package in package_dir.iterdir():
+    if package.is_file() and package.name.split("@", 1)[0] not in expected_prefixes:
+        package.unlink()
+PY
+
 # ---- 2.5. transform compose for production / older Docker Compose ------
 # The dev docker-compose.yaml uses three patterns that break on Docker Compose
 # v2.17 (commonly shipped with Docker 20.10 on customer hosts):

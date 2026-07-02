@@ -25,6 +25,7 @@ from core.plugin.plugin_service import PluginService
 from services.sudowork.install_redirect import _get_plugin_db_engine
 from services.sudowork.offline_plugin_package_service import (
     get_local_package_icon_url,
+    is_enabled_default_plugin,
     list_default_model_packages,
 )
 
@@ -222,6 +223,8 @@ class OfflineMarketplaceService:
                     plugin_id = row["plugin_id"]
                     declaration_raw = row["declaration"]
                     if not plugin_unique_identifier or not plugin_id or not declaration_raw:
+                        continue
+                    if not is_enabled_default_plugin(str(plugin_unique_identifier)):
                         continue
                     if plugin_id in excluded_plugin_ids:
                         continue

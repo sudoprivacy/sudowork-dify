@@ -25,10 +25,30 @@ plugins:
     - provider/openai.yaml
 """,
         )
+        package.writestr(
+            "provider/openai.yaml",
+            """
+provider: openai
+icon_small:
+  en_US: icon_s_en.svg
+  zh_Hans: icon_s_zh.svg
+icon_small_dark:
+  en_US: icon_s_dark.svg
+""",
+        )
         package.writestr("_assets/icon_s_en.svg", "<svg />")
+        package.writestr("_assets/icon_s_zh.svg", "<svg zh />")
+        package.writestr("_assets/icon_s_dark.svg", "<svg dark />")
 
 
-def _patch_package_paths(monkeypatch, tmp_path: Path, *, lock_sha: str = "local", file_sha: str = "local") -> str:
+def _patch_package_paths(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    lock_sha: str = "local",
+    file_sha: str = "local",
+    enabled_specs: list[str] | None = None,
+) -> str:
     package_dir = tmp_path / "plugin_packages" / "langgenius"
     package_dir.mkdir(parents=True)
     plugin_unique_identifier = f"langgenius/openai:0.4.2@{lock_sha}"
@@ -38,7 +58,13 @@ def _patch_package_paths(monkeypatch, tmp_path: Path, *, lock_sha: str = "local"
         json.dumps({"resolved": {"langgenius/openai:0.4.2": plugin_unique_identifier}}),
         encoding="utf-8",
     )
+    listfile = tmp_path / "default-plugins.json"
+    listfile.write_text(
+        json.dumps({"plugins": enabled_specs if enabled_specs is not None else ["langgenius/openai:0.4.2"]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(service, "_DEFAULT_PLUGINS_LOCK_PATH", str(lockfile))
+    monkeypatch.setattr(service, "_DEFAULT_PLUGINS_LIST_PATH", str(listfile))
     monkeypatch.setattr(service, "_DEFAULT_PLUGINS_PKG_DIR", str(package_dir))
     return plugin_unique_identifier
 
@@ -68,6 +94,16 @@ def test_resolve_default_package_identifier_uses_actual_local_package_identifier
     identifier = service.resolve_default_package_identifier("langgenius/openai:0.4.2@upstream")
 
     assert identifier == "langgenius/openai:0.4.2@local"
+
+
+def test_lockfile_entries_not_in_active_plugin_list_are_ignored(monkeypatch, tmp_path) -> None:
+    _patch_package_paths(monkeypatch, tmp_path, enabled_specs=[])
+
+    packages = service.list_default_model_packages()
+    identifier = service.resolve_default_package_identifier("langgenius/openai:0.4.2@upstream")
+
+    assert packages == []
+    assert identifier is None
 
 
 def test_get_default_package_manifest_returns_marketplace_response_shape(monkeypatch, tmp_path) -> None:
@@ -109,3 +145,30 @@ def test_extract_default_package_asset_rejects_path_traversal(monkeypatch, tmp_p
     asset = service.extract_default_package_asset(plugin_unique_identifier, "../manifest.yaml")
 
     assert asset is None
+
+
+def test_extract_default_model_provider_icon_reads_provider_asset(monkeypatch, tmp_path) -> None:
+    _patch_package_paths(monkeypatch, tmp_path)
+
+    asset = service.extract_default_model_provider_icon(
+        provider="langgenius/openai/openai",
+        icon_type="icon_small",
+        lang="zh_Hans",
+    )
+
+    assert asset is not None
+    assert asset["content"] == b"<svg zh />"
+    assert asset["mimetype"] == "image/svg+xml"
+
+
+def test_extract_default_model_provider_icon_matches_short_provider_name(monkeypatch, tmp_path) -> None:
+    _patch_package_paths(monkeypatch, tmp_path)
+
+    asset = service.extract_default_model_provider_icon(
+        provider="openai",
+        icon_type="icon_small_dark",
+        lang="en_US",
+    )
+
+    assert asset is not None
+    assert asset["content"] == b"<svg dark />"

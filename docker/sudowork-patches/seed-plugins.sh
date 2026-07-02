@@ -160,6 +160,30 @@ if [[ $fail -gt 0 ]]; then
     exit 1
 fi
 
+python3 - "$LOCK_FILE" "$PLUGIN_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+lockfile = Path(sys.argv[1])
+plugin_dir = Path(sys.argv[2])
+doc = json.loads(lockfile.read_text(encoding="utf-8"))
+expected_prefixes = {
+    identifier.split("/", 1)[1].split("@", 1)[0]
+    for identifier in doc.get("resolved", {}).values()
+    if isinstance(identifier, str) and "/" in identifier
+}
+
+removed = []
+for package in plugin_dir.iterdir():
+    if package.is_file() and package.name.split("@", 1)[0] not in expected_prefixes:
+        package.unlink()
+        removed.append(package.name)
+
+if removed:
+    print(f"→ removed stale plugin package(s): {len(removed)}")
+PY
+
 # -------------------------------------------------------------------
 # Phase 2: cache Python wheels for every plugin's transitive deps.
 #

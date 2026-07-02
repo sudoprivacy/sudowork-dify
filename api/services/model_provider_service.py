@@ -20,6 +20,7 @@ from services.entities.model_provider_entities import (
     SystemConfigurationResponse,
 )
 from services.errors.app_model_config import ProviderNotFoundError
+from services.sudowork.offline_plugin_package_service import extract_default_model_provider_icon
 
 logger = logging.getLogger(__name__)
 
@@ -562,9 +563,25 @@ class ModelProviderService:
         :return:
         """
         model_provider_factory = create_plugin_model_provider_factory(tenant_id=tenant_id)
-        byte_data, mime_type = model_provider_factory.get_provider_icon(provider, icon_type, lang)
+        try:
+            byte_data, mime_type = model_provider_factory.get_provider_icon(provider, icon_type, lang)
+        except Exception:
+            logger.warning(
+                "model_provider_icon_fetch_failed tenant_id=%s provider=%s icon_type=%s lang=%s",
+                tenant_id,
+                provider,
+                icon_type,
+                lang,
+                exc_info=True,
+            )
+        else:
+            if byte_data:
+                return byte_data, mime_type
 
-        return byte_data, mime_type
+        local_icon = extract_default_model_provider_icon(provider=provider, icon_type=icon_type, lang=lang)
+        if local_icon:
+            return local_icon["content"], local_icon["mimetype"]
+        return None, None
 
     def switch_preferred_provider(self, tenant_id: str, provider: str, preferred_provider_type: str):
         """

@@ -17,7 +17,6 @@
     "langgenius/replicate:0.0.8": "langgenius/replicate:0.0.8@40b07d098b63b47f50e7dc545d5b6a7ff871d5a34347289832ba890b080c3e89",
     "langgenius/x:0.0.21": "langgenius/x:0.0.21@40346e3ce6ddc98f19feae1d712afa5b0e3e7018327b9f6c89e1b42cd86957e3",
     "langgenius/nvidia_nim:0.0.9": "langgenius/nvidia_nim:0.0.9@62bd9b041edc24166daf3506526915dbdb693366ec44c59945bcc2bedeea62b1",
-    "langgenius/sagemaker:0.0.17": "langgenius/sagemaker:0.0.17@f63261c349d20e09440134746f2945adff555845e7054694fb0bad9e04b87efd",
     "langgenius/deepseek:0.0.17": "langgenius/deepseek:0.0.17@f7a5c1d222d17ee419b17a80d6e4923838fe93788dc724a3af73fbc6990b3a32",
     "langgenius/tongyi:0.2.1": "langgenius/tongyi:0.2.1@0924de1d15a8a35b0cc64ff396c68d5edddcfbc495a1e52ea57e8648434eff4b",
     "langgenius/zhipuai:0.0.30": "langgenius/zhipuai:0.0.30@26018901445dfce76077e57c38582b44d9a91ddc4ff86370e9a769cf8e7af5b5",
